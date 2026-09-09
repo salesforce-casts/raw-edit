@@ -1,0 +1,21 @@
+{
+  "name": "raw-edit",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "db:generate": "pnpm --filter @raw-edit/db generate",
+    "db:migrate": "pnpm --filter @raw-edit/db migrate",
+    "db:seed": "pnpm --filter @raw-edit/db seed",
+    "web": "pnpm --filter @raw-edit/web dev",
+    "worker": "pnpm --filter @raw-edit/worker start"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.2"
+  }
+}

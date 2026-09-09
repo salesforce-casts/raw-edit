@@ -1,0 +1,26 @@
+{
+  "name": "@raw-edit/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@raw-edit/ai": "workspace:*",
+    "@raw-edit/config": "workspace:*",
+    "@raw-edit/contracts": "workspace:*",
+    "@raw-edit/db": "workspace:*",
+    "@raw-edit/queue": "workspace:*",
+    "@raw-edit/storage": "workspace:*",
+    "@raw-edit/transcription": "workspace:*",
+    "@raw-edit/video-core": "workspace:*",
+    "pino": "^9.9.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

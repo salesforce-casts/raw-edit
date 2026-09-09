@@ -1,0 +1,14 @@
+{
+  "name": "@raw-edit/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@raw-edit/config": "workspace:*",
+    "@raw-edit/contracts": "workspace:*",
+    "@raw-edit/video-core": "workspace:*"
+  }
+}
