@@ -120,10 +120,11 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    @apply font-sans bg-background;
+    color-scheme: dark;
+  }
   body {
     @apply bg-background text-foreground;
-  }
-  html {
-    @apply font-sans;
   }
 }
