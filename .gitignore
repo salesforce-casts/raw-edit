@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+.DS_Store
+*.log
+npm-debug.log*
+
+coverage/
+.vercel/
+.turbo/
+
+# Local media scratch space used by the worker
+tmp/
+scratch/

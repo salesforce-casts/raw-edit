@@ -1,0 +1,37 @@
+{
+  "name": "raw-edit",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Turn a messy phone recording into a clean edit.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:packages": "npm run build -w @rawedit/core -w @rawedit/db -w @rawedit/storage -w @rawedit/queue -w @rawedit/transcription -w @rawedit/media -w @rawedit/imports",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev": "npm run dev -w @rawedit/web",
+    "dev:worker": "npm run dev -w @rawedit/worker",
+    "db:generate": "npm run generate -w @rawedit/db",
+    "db:migrate": "npm run migrate -w @rawedit/db",
+    "db:push": "npm run push -w @rawedit/db",
+    "db:seed": "npm run seed -w @rawedit/db",
+    "db:studio": "npm run studio -w @rawedit/db",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "setup": "node scripts/setup-local.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
