@@ -95,6 +95,8 @@ export interface ReviewPayload {
   segments: ReviewSegment[];
   summary: EdlSummary;
   exports: ExportRow[];
+  /** The settings that produced the current proposal, so the panel opens truthfully. */
+  settings: Partial<EditSettings> | null;
 }
 
 export interface PresetOption {

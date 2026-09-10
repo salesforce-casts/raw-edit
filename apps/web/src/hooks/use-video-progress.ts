@@ -55,7 +55,6 @@ export function useVideoProgress(
     const startPolling = () => {
       if (poller || cancelled) return;
       poller = setInterval(() => {
-        void fetch(`/api/videos/${videoId}/edl`, { method: 'HEAD' }).catch(() => undefined);
         void fetch(`/api/videos/${videoId}`)
           .then((response) => (response.ok ? response.json() : null))
           .then((body: { video?: { status: VideoStatus; progress: number; statusDetail: string | null; errorMessage: string | null } } | null) => {

@@ -67,7 +67,7 @@ export function VideoCard({ video, onChanged }: { video: VideoSummary; onChanged
   );
 
   const active = isActiveStatus(live.status);
-  const href = live.status === 'FAILED' ? `/videos/${video.id}` : `/videos/${video.id}`;
+  const href = `/videos/${video.id}`;
 
   async function download() {
     setBusy(true);

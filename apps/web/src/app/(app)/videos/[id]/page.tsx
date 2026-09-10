@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
 import { and, desc, eq } from 'drizzle-orm';
 import {
+  editSettings,
   getActiveEdl,
   getTakesWithMembers,
   getTranscriptWithSegments,
@@ -30,7 +31,7 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
   const row = await getVideoForUser(database, id, user.id);
   if (!row) notFound();
 
-  const [decisions, takes, transcriptData, exports] = await Promise.all([
+  const [decisions, takes, transcriptData, exports, settingsRows] = await Promise.all([
     getActiveEdl(database, id),
     getTakesWithMembers(database, id),
     getTranscriptWithSegments(database, id),
@@ -39,7 +40,9 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
       .from(videoExport)
       .where(and(eq(videoExport.videoId, id), eq(videoExport.userId, user.id)))
       .orderBy(desc(videoExport.createdAt)),
+    database.select().from(editSettings).where(eq(editSettings.videoId, id)).limit(1),
   ]);
+  const stored = settingsRows[0];
 
   const sign = async (key: string | null) =>
     key ? storage().signDownloadUrl(key, URL_TTL.playback) : null;
@@ -118,6 +121,17 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
       })),
     })),
     summary: summarizeEdl(decisions, row.duration ?? 0),
+    settings: stored
+      ? {
+          silenceThresholdSeconds: stored.silenceThresholdSeconds,
+          padPreMs: stored.padPreMs,
+          padPostMs: stored.padPostMs,
+          removeFillerWords: stored.removeFillerWords,
+          detectRetakes: stored.detectRetakes,
+          removeSilence: stored.removeSilence,
+          minSegmentSeconds: stored.minSegmentSeconds,
+        }
+      : null,
     exports: exports.map((row) => ({
       id: row.id,
       preset: row.preset,

@@ -5,7 +5,7 @@ import { SlidersHorizontal } from 'lucide-react';
 import { SILENCE_THRESHOLD_CHOICES, type EditSettings } from '@rawedit/core';
 import { Button } from '@/components/ui/button';
 import { Card, Spinner, Toggle } from '@/components/ui/primitives';
-import { api, cn } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 
 /**
  * Editing controls.
@@ -14,30 +14,22 @@ import { api, cn } from '@/lib/utils';
  * — no re-upload, no re-transcription — because the analysis layer is deterministic.
  */
 export function EditSettingsPanel({
-  videoId,
+  current,
   saving,
   onApply,
 }: {
-  videoId: string;
+  /** The settings that produced the current proposal. */
+  current: Partial<EditSettings> | null;
   saving: boolean;
   onApply: (settings: Partial<EditSettings>) => void;
 }) {
   const [open, setOpen] = React.useState(false);
-  const [settings, setSettings] = React.useState<EditSettings | null>(null);
-
-  React.useEffect(() => {
-    if (!open || settings) return;
-    void api<{ settings: EditSettings }>(`/api/videos/${videoId}/edl`)
-      .then(() => undefined)
-      .catch(() => undefined);
-  }, [open, settings, videoId]);
-
-  const [threshold, setThreshold] = React.useState(1);
-  const [padPre, setPadPre] = React.useState(160);
-  const [padPost, setPadPost] = React.useState(200);
-  const [removeFiller, setRemoveFiller] = React.useState(false);
-  const [detectRetakes, setDetectRetakes] = React.useState(true);
-  const [removeSilence, setRemoveSilence] = React.useState(true);
+  const [threshold, setThreshold] = React.useState(current?.silenceThresholdSeconds ?? 1);
+  const [padPre, setPadPre] = React.useState(current?.padPreMs ?? 160);
+  const [padPost, setPadPost] = React.useState(current?.padPostMs ?? 200);
+  const [removeFiller, setRemoveFiller] = React.useState(current?.removeFillerWords ?? false);
+  const [detectRetakes, setDetectRetakes] = React.useState(current?.detectRetakes ?? true);
+  const [removeSilence, setRemoveSilence] = React.useState(current?.removeSilence ?? true);
 
   const apply = () => {
     onApply({

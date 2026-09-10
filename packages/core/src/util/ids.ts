@@ -43,10 +43,17 @@ export function newId(prefix: IdPrefix): string {
   return `${prefix}_${ulid().toLowerCase()}`;
 }
 
-/** Short, URL-safe, unambiguous slug for share links (`app.com/v/abc123`). */
+/**
+ * Short, URL-safe, unambiguous slug for share links (`app.com/v/abc123`).
+ *
+ * The alphabet drops the characters people misread aloud (i/l/1, o/0). Twelve
+ * characters of a 31-symbol alphabet is about 59 bits, which is the point of
+ * unguessability for a link that is the only thing protecting a private video —
+ * ten characters would be 49, and these links get pasted into group chats.
+ */
 const SLUG_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 
-export function shareSlug(length = 10): string {
+export function shareSlug(length = 12): string {
   const bytes = randomBytes(length);
   let out = '';
   for (let i = 0; i < length; i += 1) out += SLUG_ALPHABET[bytes[i]! % SLUG_ALPHABET.length]!;

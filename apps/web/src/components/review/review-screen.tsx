@@ -34,6 +34,7 @@ export function ReviewScreen({ initial }: { initial: ReviewPayload }) {
   const [previewEdit, setPreviewEdit] = React.useState(false);
   const [peaks, setPeaks] = React.useState<number[] | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [settings, setSettings] = React.useState<Partial<EditSettings> | null>(initial.settings ?? null);
 
   // Undo/redo is a stack of overrides replayed over the automatic proposal, so a
   // step back is just "send one fewer override" rather than an inverse operation.
@@ -73,17 +74,19 @@ export function ReviewScreen({ initial }: { initial: ReviewPayload }) {
 
   /** Send the whole override stack; the server replays it deterministically. */
   const commit = React.useCallback(
-    async (overrides: EdlOverride[], settings?: Partial<EditSettings>, reset?: boolean) => {
+    async (overrides: EdlOverride[], patch?: Partial<EditSettings>, reset?: boolean) => {
       setSaving(true);
       try {
-        const result = await api<{ decisions: EditDecision[]; summary: EdlSummary }>(
-          `/api/videos/${video.id}/edl`,
-          {
-            method: 'PATCH',
-            body: JSON.stringify({ overrides, settings, reset }),
-          },
-        );
+        const result = await api<{
+          decisions: EditDecision[];
+          summary: EdlSummary;
+          settings: EditSettings;
+        }>(`/api/videos/${video.id}/edl`, {
+          method: 'PATCH',
+          body: JSON.stringify({ overrides, settings: patch, reset }),
+        });
         setData((previous) => ({ ...previous, decisions: result.decisions, summary: result.summary }));
+        if (result.settings) setSettings(result.settings);
       } catch (error: unknown) {
         toast.error(error instanceof Error ? error.message : 'Could not save that edit.');
       } finally {
@@ -252,7 +255,7 @@ export function ReviewScreen({ initial }: { initial: ReviewPayload }) {
 
         <div className="flex min-h-0 flex-col gap-4">
           <EditSettingsPanel
-            videoId={video.id}
+            current={settings}
             saving={saving}
             onApply={(settings) => {
               setUndoStack([]);
