@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, exports, shareLinks, videos } from "@raw-edit/db";
-import { AppError, SIGNED_URL_TTL_SECONDS } from "@raw-edit/contracts";
-import { createR2Storage } from "@raw-edit/storage";
-import { hashShareToken } from "@raw-edit/video-core";
+import { AppError, SIGNED_URL_TTL_SECONDS, hashShareToken } from "@raw-edit/core";
+import { getWebContainer } from "@/lib/container";
 import { jsonError } from "@/server/api";
 
 export async function GET(_: Request, context: { params: Promise<{ token: string }> }) {
@@ -29,7 +28,7 @@ export async function GET(_: Request, context: { params: Promise<{ token: string
     if (!row.export.storageKey || row.export.status !== "COMPLETE") {
       throw new AppError("NOT_FOUND", "Export is not ready", 404);
     }
-    const url = await createR2Storage().signGet(
+    const url = await getWebContainer().storage.signGet(
       row.export.storageKey,
       SIGNED_URL_TTL_SECONDS.exportDownload,
       `${row.filename.replace(/\.[^.]+$/, "")}-edit.mp4`,

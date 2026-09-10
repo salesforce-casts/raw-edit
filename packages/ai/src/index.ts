@@ -1,16 +1,15 @@
 import { loadConfig } from "@raw-edit/config";
-import type { TakeCandidateGroup, TakeDecision } from "@raw-edit/contracts";
-import { heuristicJudge } from "@raw-edit/video-core";
+import {
+  decisionFromIndex,
+  heuristicJudge,
+  needsAiArbitration,
+  type PaymentProvider,
+  type TakeCandidateGroup,
+  type TakeDecision,
+} from "@raw-edit/core";
 
 export interface TakeJudge {
   judge(group: TakeCandidateGroup): Promise<TakeDecision>;
-}
-
-export interface BillingProvider {
-  createCustomer(input: { userId: string; email: string }): Promise<{ customerId: string }>;
-  createCheckout(input: { customerId: string; plan: string }): Promise<{ url: string }>;
-  cancelSubscription(input: { subscriptionId: string }): Promise<void>;
-  handleWebhook(payload: unknown, signature: string): Promise<void>;
 }
 
 export function createHeuristicTakeJudge(): TakeJudge {
@@ -24,7 +23,8 @@ export function createHeuristicTakeJudge(): TakeJudge {
 export function createOpenAiTakeJudge(apiKey = loadConfig().aiApiKey): TakeJudge {
   return {
     async judge(group) {
-      if (!apiKey) return heuristicJudge(group);
+      const fallback = heuristicJudge(group);
+      if (!apiKey || !needsAiArbitration(group)) return fallback;
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -38,16 +38,14 @@ export function createOpenAiTakeJudge(apiKey = loadConfig().aiApiKey): TakeJudge
             {
               role: "system",
               content:
-                "You choose which already-timestamped take to keep. Never invent or change timestamps. Return JSON {keepCandidateId,removeCandidateIds,confidence,reason}.",
+                "You choose which already-timestamped take to keep. Never invent or change timestamps. Return JSON {keepIndex,reason}. keepIndex is a 0-based index into candidates.",
             },
             {
               role: "user",
               content: JSON.stringify({
-                candidates: group.candidates.map((candidate) => ({
-                  id: candidate.id,
+                candidates: group.candidates.map((candidate, index) => ({
+                  index,
                   text: candidate.text,
-                  startMs: candidate.startMs,
-                  endMs: candidate.endMs,
                   completenessScore: candidate.completenessScore,
                   fluencyScore: candidate.fluencyScore,
                 })),
@@ -56,17 +54,15 @@ export function createOpenAiTakeJudge(apiKey = loadConfig().aiApiKey): TakeJudge
           ],
         }),
       });
-      if (!response.ok) return heuristicJudge(group);
+      if (!response.ok) return fallback;
       const json = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
       };
-      const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? "{}") as TakeDecision;
-      if (!parsed.keepCandidateId || !Array.isArray(parsed.removeCandidateIds)) {
-        return heuristicJudge(group);
-      }
-      const ids = new Set(group.candidates.map((candidate) => candidate.id));
-      if (!ids.has(parsed.keepCandidateId)) return heuristicJudge(group);
-      return parsed;
+      const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? "{}") as {
+        keepIndex?: number;
+        reason?: string;
+      };
+      return decisionFromIndex(group, parsed.keepIndex ?? -1, parsed.reason) ?? fallback;
     },
   };
 }
@@ -76,7 +72,7 @@ export function getTakeJudge(provider = loadConfig().aiProvider): TakeJudge {
   return createHeuristicTakeJudge();
 }
 
-export function createNoopBillingProvider(): BillingProvider {
+export function createNoopPaymentProvider(): PaymentProvider {
   return {
     async createCustomer(input) {
       return { customerId: `local_${input.userId}` };
@@ -92,3 +88,5 @@ export function createNoopBillingProvider(): BillingProvider {
     },
   };
 }
+
+export const createNoopBillingProvider = createNoopPaymentProvider;

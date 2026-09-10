@@ -29,7 +29,12 @@ export async function DELETE(_: Request, context: { params: Promise<{ videoId: s
       .update(videos)
       .set({ status: "DELETING", updatedAt: new Date() })
       .where(eq(videos.id, video.id));
-    await enqueueJob({ videoId: video.id, userId: user.id, type: "DELETE_VIDEO" });
+    await enqueueJob({
+      videoId: video.id,
+      userId: user.id,
+      type: "DELETE_VIDEO",
+      inputVersion: video.sourceStorageKey ?? video.id,
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return jsonError(error);

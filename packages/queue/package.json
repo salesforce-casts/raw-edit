@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@raw-edit/config": "workspace:*",
+    "@raw-edit/core": "workspace:*",
     "@raw-edit/contracts": "workspace:*",
     "bullmq": "^5.58.5",
     "ioredis": "^5.8.0"

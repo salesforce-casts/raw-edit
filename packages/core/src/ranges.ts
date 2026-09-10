@@ -1,4 +1,4 @@
-import type { EditSegment } from "@raw-edit/contracts";
+import type { EditSegment } from "./types";
 
 export type MsRange = { startMs: number; endMs: number };
 
@@ -19,6 +19,22 @@ export function mergeRanges(ranges: MsRange[]): MsRange[] {
     }
   }
   return merged;
+}
+
+export function intersectRanges(left: MsRange[], right: MsRange[]): MsRange[] {
+  const a = mergeRanges(left);
+  const b = mergeRanges(right);
+  const out: MsRange[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const start = Math.max(a[i].startMs, b[j].startMs);
+    const end = Math.min(a[i].endMs, b[j].endMs);
+    if (end > start) out.push({ startMs: start, endMs: end });
+    if (a[i].endMs < b[j].endMs) i += 1;
+    else j += 1;
+  }
+  return out;
 }
 
 export function subtractRanges(source: MsRange, removals: MsRange[]): MsRange[] {
@@ -51,10 +67,9 @@ export function clampRange(range: MsRange, duration: number): MsRange {
 
 export function keepRangesFromEdl(segments: EditSegment[]): MsRange[] {
   return mergeRanges(
-    segments.filter((segment) => segment.action === "KEEP").map((segment) => ({
-      startMs: segment.startMs,
-      endMs: segment.endMs,
-    })),
+    segments
+      .filter((segment) => segment.action === "KEEP")
+      .map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs })),
   );
 }
 
@@ -68,21 +83,6 @@ export function proposedDuration(segments: EditSegment[]): number {
     .reduce((sum, segment) => sum + durationMs(segment), 0);
 }
 
-export function buildCoveringEdl(
-  durationMsValue: number,
-  removals: Array<EditSegment & { action: "REMOVE" }>,
-): EditSegment[] {
-  const keep = subtractRanges({ startMs: 0, endMs: durationMsValue }, removals);
-  const pieces: EditSegment[] = [
-    ...keep.map((range) => ({
-      startMs: range.startMs,
-      endMs: range.endMs,
-      action: "KEEP" as const,
-      source: "SYSTEM" as const,
-      reason: "Retained speech",
-      confidence: 1,
-    })),
-    ...removals,
-  ].sort((a, b) => a.startMs - b.startMs || (a.action === "REMOVE" ? -1 : 1));
-  return pieces;
+export function overlaps(a: MsRange, b: MsRange): boolean {
+  return a.startMs < b.endMs && b.startMs < a.endMs;
 }

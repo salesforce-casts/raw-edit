@@ -13,9 +13,14 @@ export async function POST(_: Request, context: { params: Promise<{ videoId: str
     const video = await requireOwnedVideo(user.id, videoId);
     await getDb()
       .update(videos)
-      .set({ status: "DETECTING_EDITS", progress: 65, progressMessage: "Re-analysing edits", updatedAt: new Date() })
+      .set({ status: "DETECTING_TAKES", progress: 65, progressMessage: "Re-analysing edits", updatedAt: new Date() })
       .where(eq(videos.id, video.id));
-    await enqueueJob({ videoId: video.id, userId: user.id, type: "DETECT_AUTOMATIC_EDITS" });
+    await enqueueJob({
+      videoId: video.id,
+      userId: user.id,
+      type: "DETECT_AUTOMATIC_EDITS",
+      inputVersion: `${video.sourceSha256 ?? video.id}|${video.silenceThresholdMs}|${Date.now()}`,
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return jsonError(error);

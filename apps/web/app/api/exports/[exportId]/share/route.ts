@@ -1,9 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, exports, shareLinks, videos } from "@raw-edit/db";
-import { AppError } from "@raw-edit/contracts";
-import { createShareToken } from "@raw-edit/video-core";
+import { AppError, createShareToken } from "@raw-edit/core";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { logger } from "@/server/logger";
@@ -24,7 +24,7 @@ export async function POST(request: Request, context: { params: Promise<{ export
       .where(eq(exports.id, exportId))
       .limit(1);
     if (!row || row.userId !== user.id) throw new AppError("NOT_FOUND", "Export not found", 404);
-    const { token, tokenHash } = createShareToken();
+    const { token, tokenHash } = createShareToken(randomBytes(16));
     const [link] = await getDb()
       .insert(shareLinks)
       .values({

@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@raw-edit/config": "workspace:*",
-    "@raw-edit/contracts": "workspace:*",
-    "@raw-edit/video-core": "workspace:*"
+    "@raw-edit/core": "workspace:*"
   }
 }

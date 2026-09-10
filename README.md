@@ -21,12 +21,15 @@ Monorepo:
 
 - `apps/web` — Next.js App Router
 - `apps/worker` — Railway media worker
+- `packages/core` — ports, retake/silence/EDL/render engine, streaming SHA-256 (zero I/O)
 - `packages/db` — Drizzle schema (single source of truth)
 - `packages/storage` — R2 / S3 provider
-- `packages/queue` — BullMQ provider
+- `packages/queue` — BullMQ provider + progress fan-out
 - `packages/transcription` — SpeechToTextProvider
-- `packages/ai` — TakeJudge + billing interface
-- `packages/video-core` — EDL, silence, retakes, FFmpeg plans, tests
+- `packages/media` — ffmpeg / ffprobe VideoProcessor
+- `packages/imports` — URL importer with SSRF checks
+- `packages/ai` — TakeJudge + payment interface
+- `packages/config` — shared env
 
 ## Local development
 
@@ -61,5 +64,5 @@ Do not upload multi-GB files through Vercel. Do not run FFmpeg in Next.js routes
 ## Tests
 
 ```bash
-pnpm --filter @raw-edit/video-core test
+pnpm --filter @raw-edit/core test
 ```

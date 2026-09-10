@@ -1,8 +1,9 @@
 import {
   DEFAULT_MAX_VIDEO_BYTES,
   DEFAULT_MAX_VIDEO_DURATION_SECONDS,
+  MAX_CONCURRENT_JOBS_PER_USER,
   MULTIPART_PART_SIZE_BYTES,
-} from "@raw-edit/contracts";
+} from "@raw-edit/core";
 
 function optional(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
@@ -59,7 +60,9 @@ export function loadConfig() {
     maxVideoBytes: integer("MAX_VIDEO_BYTES", DEFAULT_MAX_VIDEO_BYTES),
     maxVideoDurationSeconds: integer("MAX_VIDEO_DURATION_SECONDS", DEFAULT_MAX_VIDEO_DURATION_SECONDS),
     multipartPartSizeBytes: integer("MULTIPART_PART_SIZE_BYTES", MULTIPART_PART_SIZE_BYTES),
-    scratchDir: optional("WORKER_SCRATCH_DIR", "/tmp/rawedit"),
+    maxConcurrentJobsPerUser: integer("MAX_CONCURRENT_JOBS_PER_USER", MAX_CONCURRENT_JOBS_PER_USER),
+    sourceUrlTtlSeconds: integer("SOURCE_URL_TTL_SECONDS", 60 * 60),
+    scratchDir: optional("WORKER_SCRATCH_DIR", optional("WORKER_TMP_DIR", "/tmp/rawedit")),
     scratchSafetyBytes: integer("WORKER_SCRATCH_SAFETY_BYTES", 8 * 1024 * 1024 * 1024),
     sentryDsn: optional("SENTRY_DSN"),
     posthogKey: optional("POSTHOG_KEY"),

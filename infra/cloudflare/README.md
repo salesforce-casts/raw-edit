@@ -10,7 +10,7 @@ Do not enable public access.
 Application object keys:
 
 ```
-users/{userId}/videos/{videoId}/source/original.mov
+users/{userId}/videos/{videoId}/originals/original.mov
 users/{userId}/videos/{videoId}/proxy/720p.mp4
 users/{userId}/videos/{videoId}/audio/transcription.wav
 users/{userId}/videos/{videoId}/thumb/poster.jpg

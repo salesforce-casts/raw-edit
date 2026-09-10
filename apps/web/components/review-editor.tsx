@@ -60,6 +60,19 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
 
   useEffect(() => {
     void load();
+    const events = new EventSource(`/api/videos/${videoId}/events`);
+    events.onmessage = (event) => {
+      try {
+        const json = JSON.parse(event.data) as VideoRow;
+        setVideo((current) => (current ? { ...current, ...json } : current));
+        if (json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE") {
+          void load();
+          void loadProxy();
+        }
+      } catch {
+        /* ignore malformed progress */
+      }
+    };
     const timer = window.setInterval(() => {
       void fetch(`/api/videos/${videoId}/status`)
         .then((response) => response.json())
@@ -71,62 +84,57 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           }
         })
         .catch(() => undefined);
-    }, 2000);
-    return () => window.clearInterval(timer);
+    }, 4000);
+    return () => {
+      events.close();
+      window.clearInterval(timer);
+    };
   }, [videoId]);
 
   const original = video?.durationMs ?? originalDuration(segments);
   const proposed = proposedDuration(segments);
   const removed = Math.max(0, original - proposed);
 
-  function commit(next: EditSegment[]) {
+  function commitOverride(override: { startMs: number; endMs: number; action: "KEEP" | "REMOVE" }) {
     setHistory((current) => [...current, segments]);
     setFuture([]);
-    setSegments(next);
     void fetch(`/api/videos/${videoId}/edit`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ segments: next }),
-    });
+      body: JSON.stringify({ type: "override", override }),
+    }).then(() => void load());
   }
 
   function toggle(index: number) {
-    const next = segments.map((segment, i) =>
-      i === index
-        ? {
-            ...segment,
-            action: segment.action === "REMOVE" ? ("KEEP" as const) : ("REMOVE" as const),
-            source: "USER" as const,
-          }
-        : segment,
-    );
-    commit(next);
+    const segment = segments[index];
+    if (!segment) return;
+    commitOverride({
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      action: segment.action === "REMOVE" ? "KEEP" : "REMOVE",
+    });
   }
 
   function undo() {
-    const previous = history.at(-1);
-    if (!previous) return;
+    if (history.length === 0) return;
     setHistory((current) => current.slice(0, -1));
     setFuture((current) => [segments, ...current]);
-    setSegments(previous);
     void fetch(`/api/videos/${videoId}/edit`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ segments: previous }),
-    });
+      body: JSON.stringify({ type: "undo" }),
+    }).then(() => void load());
   }
 
   function redo() {
     const next = future[0];
     if (!next) return;
+    const changed = next.find((segment, index) => segments[index]?.action !== segment.action) ?? next[0];
     setFuture((current) => current.slice(1));
     setHistory((current) => [...current, segments]);
-    setSegments(next);
-    void fetch(`/api/videos/${videoId}/edit`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ segments: next }),
-    });
+    if (changed) {
+      commitOverride({ startMs: changed.startMs, endMs: changed.endMs, action: changed.action });
+    }
   }
 
   function seekTo(ms: number) {

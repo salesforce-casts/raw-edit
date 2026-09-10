@@ -22,6 +22,7 @@ export const videoStatusEnum = pgEnum("video_status", [
   "UPLOADED",
   "ANALYZING",
   "TRANSCRIBING",
+  "DETECTING_TAKES",
   "DETECTING_EDITS",
   "READY_FOR_REVIEW",
   "RENDERING",
@@ -37,6 +38,7 @@ export const sourceTypeEnum = pgEnum("source_type", [
   "dropbox",
   "onedrive",
   "icloud",
+  "url",
 ]);
 
 export const jobTypeEnum = pgEnum("job_type", [
@@ -49,9 +51,12 @@ export const jobTypeEnum = pgEnum("job_type", [
 
 export const jobStatusEnum = pgEnum("job_status", [
   "QUEUED",
+  "RUNNING",
   "ACTIVE",
+  "SUCCEEDED",
   "COMPLETED",
   "FAILED",
+  "DEAD",
   "DEAD_LETTER",
 ]);
 
@@ -74,6 +79,7 @@ export const editSourceEnum = pgEnum("edit_source", [
 ]);
 export const exportPresetEnum = pgEnum("export_preset", [
   "HIGH_QUALITY",
+  "SOCIAL",
   "SMALLER_FILE",
   "HEVC_HIGH_QUALITY",
 ]);
@@ -187,6 +193,7 @@ export const videos = pgTable(
     mimeType: text("mime_type"),
     sizeBytes: bigint("size_bytes", { mode: "number" }),
     sourceSha256: text("source_sha256"),
+    clientSha256: text("client_sha256"),
     r2Etag: text("r2_etag"),
     durationMs: bigint("duration_ms", { mode: "number" }),
     width: integer("width"),
@@ -270,12 +277,16 @@ export const processingJobs = pgTable(
     type: jobTypeEnum("type").notNull(),
     status: jobStatusEnum("status").notNull().default("QUEUED"),
     bullmqJobId: text("bullmq_job_id"),
+    idempotencyKey: text("idempotency_key"),
+    inputVersion: text("input_version"),
     progress: integer("progress").notNull().default(0),
     attempt: integer("attempt").notNull().default(0),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
+    errorClass: text("error_class"),
     lockedBy: text("locked_by"),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -283,8 +294,10 @@ export const processingJobs = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    uniqueIndex("processing_jobs_idempotency_idx").on(table.idempotencyKey),
     index("processing_jobs_video_idx").on(table.videoId, table.type),
     index("processing_jobs_status_idx").on(table.status, table.type),
+    index("processing_jobs_heartbeat_idx").on(table.status, table.heartbeatAt),
   ],
 );
 
@@ -380,6 +393,23 @@ export const editSegments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("edit_segments_version_idx").on(table.editVersionId, table.sequenceNumber)],
+);
+
+export const editOverrides = pgTable(
+  "edit_overrides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    videoId: uuid("video_id")
+      .notNull()
+      .references(() => videos.id, { onDelete: "cascade" }),
+    sequenceNumber: integer("sequence_number").notNull(),
+    startMs: bigint("start_ms", { mode: "number" }).notNull(),
+    endMs: bigint("end_ms", { mode: "number" }).notNull(),
+    action: editActionEnum("action").notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("edit_overrides_video_idx").on(table.videoId, table.sequenceNumber)],
 );
 
 export const exports = pgTable(

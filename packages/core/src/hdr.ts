@@ -1,4 +1,4 @@
-import type { FfprobeMetadata, HdrType } from "@raw-edit/contracts";
+import type { FfprobeMetadata, HdrType } from "./types";
 
 export function classifyHdr(input: {
   colorTransfer?: string | null;
@@ -42,8 +42,17 @@ export function parseFfprobe(json: {
     0;
   const colorTransfer = typeof video?.color_transfer === "string" ? video.color_transfer : undefined;
   const colorPrimaries = typeof video?.color_primaries === "string" ? video.color_primaries : undefined;
+  const colorSpace = typeof video?.color_space === "string" ? video.color_space : undefined;
   const pixelFormat = typeof video?.pix_fmt === "string" ? video.pix_fmt : undefined;
   const sideData = JSON.stringify(video?.side_data_list ?? []);
+  const mastering =
+    ((video?.side_data_list as Array<{ mastering_display_metadata?: string }> | undefined) ?? []).find(
+      (item) => item.mastering_display_metadata,
+    )?.mastering_display_metadata ?? undefined;
+  const maxCll =
+    ((video?.side_data_list as Array<{ max_content?: number; max_average?: number }> | undefined) ?? []).find(
+      (item) => item.max_content != null,
+    );
   return {
     durationMs: Math.round(durationSec * 1000),
     width: typeof video?.width === "number" ? video.width : undefined,
@@ -54,10 +63,12 @@ export function parseFfprobe(json: {
     audioCodec: typeof audio?.codec_name === "string" ? audio.codec_name : undefined,
     pixelFormat,
     bitRate: json.format?.bit_rate ? Number(json.format.bit_rate) : undefined,
-    colorSpace: typeof video?.color_space === "string" ? video.color_space : undefined,
+    colorSpace,
     colorTransfer,
     colorPrimaries,
     hdrType: classifyHdr({ colorTransfer, colorPrimaries, pixelFormat, sideData }),
     rotationDegrees: rotation || undefined,
+    masteringDisplay: mastering,
+    maxCll: maxCll ? `${maxCll.max_content},${maxCll.max_average ?? 0}` : undefined,
   };
 }

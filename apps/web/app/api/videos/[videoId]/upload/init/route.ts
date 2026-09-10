@@ -3,12 +3,13 @@ import { and, eq } from "drizzle-orm";
 import { getDb, uploadSessions, videos } from "@raw-edit/db";
 import {
   AppError,
-  MULTIPART_PART_SIZE_BYTES,
-  MULTIPART_THRESHOLD_BYTES,
   SIGNED_URL_TTL_SECONDS,
-} from "@raw-edit/contracts";
-import { createR2Storage, objectKeys } from "@raw-edit/storage";
-import { assertTransition } from "@raw-edit/video-core";
+  multipartPartSizeBytes,
+  shouldUseMultipart,
+} from "@raw-edit/core";
+import { getWebContainer } from "@/lib/container";
+import { objectKeys } from "@raw-edit/storage";
+import { assertTransition } from "@raw-edit/core";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { requireOwnedVideo } from "@/server/owned-video";
@@ -26,8 +27,8 @@ export async function POST(_: Request, context: { params: Promise<{ videoId: str
     const sizeBytes = video.sizeBytes ?? 0;
     const keys = objectKeys(user.id, video.id);
     const storageKey = video.sourceStorageKey ?? keys.original(video.originalFilename);
-    const uploadType = sizeBytes >= MULTIPART_THRESHOLD_BYTES ? "multipart" : "put";
-    const storage = createR2Storage();
+    const uploadType = shouldUseMultipart(sizeBytes) ? "multipart" : "put";
+    const storage = getWebContainer().storage;
     const db = getDb();
 
     let providerUploadId: string | undefined;
@@ -39,7 +40,7 @@ export async function POST(_: Request, context: { params: Promise<{ videoId: str
       putUrl = await storage.signPut(storageKey, video.mimeType ?? "video/quicktime", SIGNED_URL_TTL_SECONDS.uploadPart);
     }
 
-    const partSize = MULTIPART_PART_SIZE_BYTES;
+    const partSize = multipartPartSizeBytes(sizeBytes);
     const totalParts = uploadType === "multipart" ? Math.ceil(sizeBytes / partSize) : 1;
     const [session] = await db
       .insert(uploadSessions)

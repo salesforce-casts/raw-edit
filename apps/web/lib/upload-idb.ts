@@ -8,6 +8,7 @@ export type PersistedUpload = {
   filename: string;
   filesize: number;
   lastModified: number;
+  fingerprint?: string;
   partSize: number;
   completedParts: Array<{ partNumber: number; etag: string }>;
   createdAt: number;

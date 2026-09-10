@@ -1,77 +1,56 @@
-import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { loadConfig } from "@raw-edit/config";
-import { AppError, type EditSegment } from "@raw-edit/contracts";
 import {
-  getDb,
+  AppError,
+  buildCoveringEdl,
+  dualSignalSilenceRemovals,
+  fillerRemovals,
+  groupRetakeCandidates,
+  retakeRemovals,
+} from "@raw-edit/core";
+import {
   detectedTakeGroups,
   detectedTakeSegments,
+  editOverrides,
   editSegments,
   editVersions,
   transcriptSegments,
   transcripts,
   videos,
 } from "@raw-edit/db";
-import { createR2Storage } from "@raw-edit/storage";
-import { getTakeJudge } from "@raw-edit/ai";
-import {
-  buildCoveringEdl,
-  groupRetakeCandidates,
-  parseSilencedetect,
-  retakeRemovals,
-  silenceRemovals,
-} from "@raw-edit/video-core";
 import type { QueueJobPayload } from "@raw-edit/queue";
-import { ffmpeg } from "../ffmpeg/run";
-import { claimJob, finishJob } from "./lock";
+import { getWorkerContext } from "../lib/context";
+import { claimJob, finishJob, startHeartbeat } from "./lock";
 
 export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
-  const claimed = await claimJob(payload.jobId);
+  const claimed = await claimJob(payload.jobId, payload.idempotencyKey);
   if (!claimed || claimed.alreadyDone) return;
-  const config = loadConfig();
-  const workDir = join(config.scratchDir, payload.jobId);
-  const db = getDb();
+  const { config, db, storage, media, takeJudge, queue } = getWorkerContext();
+  const stopHeartbeat = startHeartbeat(payload.jobId);
   try {
-    await mkdir(workDir, { recursive: true });
     const [video] = await db.select().from(videos).where(eq(videos.id, payload.videoId)).limit(1);
-    if (!video) throw new AppError("NOT_FOUND", "Video missing", 404);
-    const sourceKey = video.sourceStorageKey;
-    if (!sourceKey) throw new AppError("SOURCE_MISSING", "Original missing", 404);
-    const sourcePath = join(workDir, "original");
-    await createR2Storage().downloadToFile(sourceKey, sourcePath);
-
-    const silence = await ffmpeg([
-      "-i",
-      sourcePath,
-      "-af",
-      `silencedetect=noise=-35dB:d=${(video.silenceThresholdMs / 1000).toFixed(2)}`,
-      "-f",
-      "null",
-      "-",
-    ]).catch((error: Error) => ({ stdout: "", stderr: error.message }));
-    const silenceRegions = parseSilencedetect(silence.stderr);
-    const silenceCuts = silenceRemovals(silenceRegions, video.durationMs ?? 0, {
-      minSilenceMs: video.silenceThresholdMs,
-      preRollMs: video.preRollMs,
-      postRollMs: video.postRollMs,
-    });
+    if (!video?.sourceStorageKey) throw new AppError("SOURCE_MISSING", "Original missing", 404, true);
+    const sourceUrl = await storage.signGet(video.sourceStorageKey, config.sourceUrlTtlSeconds);
+    const acoustic = await media.detectSilence(sourceUrl, video.silenceThresholdMs / 1000);
 
     const [transcript] = await db.select().from(transcripts).where(eq(transcripts.videoId, video.id)).limit(1);
     const rows = transcript
       ? await db.select().from(transcriptSegments).where(eq(transcriptSegments.transcriptId, transcript.id))
       : [];
-    const groups = groupRetakeCandidates(
-      rows.map((row) => ({
-        startMs: row.startMs,
-        endMs: row.endMs,
-        text: row.text,
-        words: row.wordsJson ?? [],
-      })),
-    );
-    const judge = getTakeJudge();
-    const decisions = await Promise.all(groups.map((group) => judge.judge(group)));
+    const timed = rows.map((row) => ({
+      startMs: row.startMs,
+      endMs: row.endMs,
+      text: row.text,
+      words: row.wordsJson ?? [],
+    }));
+    const silenceCuts = dualSignalSilenceRemovals(acoustic, timed, video.durationMs ?? 0, {
+      minSilenceMs: video.silenceThresholdMs,
+      preRollMs: video.preRollMs,
+      postRollMs: video.postRollMs,
+    });
+    const groups = groupRetakeCandidates(timed);
+    const decisions = await Promise.all(groups.map((group) => takeJudge.judge(group)));
     const retakes = retakeRemovals(groups, decisions);
+    const fillers = fillerRemovals(timed, video.removeFillers);
 
     await db.delete(detectedTakeGroups).where(eq(detectedTakeGroups.videoId, video.id));
     for (const [index, group] of groups.entries()) {
@@ -100,8 +79,10 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       }
     }
 
-    const removals = [...silenceCuts, ...retakes] as Array<EditSegment & { action: "REMOVE" }>;
-    const covering = buildCoveringEdl(video.durationMs ?? 0, removals);
+    const covering = buildCoveringEdl(
+      video.durationMs ?? 0,
+      [...retakes, ...silenceCuts, ...fillers].map((segment) => ({ ...segment, action: "REMOVE" as const })),
+    );
     const existing = await db.select().from(editVersions).where(eq(editVersions.videoId, video.id));
     const nextNumber = existing.reduce((max, version) => Math.max(max, version.versionNumber), 0) + 1;
     await db.update(editVersions).set({ isCurrent: false }).where(eq(editVersions.videoId, video.id));
@@ -123,6 +104,7 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
         })),
       );
     }
+    await db.delete(editOverrides).where(eq(editOverrides.videoId, video.id));
 
     await db
       .update(videos)
@@ -133,17 +115,23 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
         updatedAt: new Date(),
       })
       .where(eq(videos.id, video.id));
-    await finishJob(payload.jobId, "COMPLETED");
+    await queue.publishProgress(video.id, { status: "READY_FOR_REVIEW", progress: 100 });
+    await finishJob(payload.jobId, "SUCCEEDED");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Detection failed";
     const code = error instanceof AppError ? error.code : "AI_ANALYSIS_FAILED";
-    await getDb()
-      .update(videos)
+    const permanent = error instanceof AppError ? error.permanent : false;
+    await getWorkerContext()
+      .db.update(videos)
       .set({ status: "FAILED", errorCode: code, errorMessage: message, updatedAt: new Date() })
       .where(eq(videos.id, payload.videoId));
-    await finishJob(payload.jobId, "FAILED", { errorCode: code, errorMessage: message });
+    await finishJob(payload.jobId, permanent ? "DEAD" : "FAILED", {
+      errorCode: code,
+      errorMessage: message,
+      errorClass: permanent ? "permanent" : "transient",
+    });
     throw error;
   } finally {
-    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    stopHeartbeat();
   }
 }

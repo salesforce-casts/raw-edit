@@ -2,15 +2,11 @@ import { loadConfig } from "@raw-edit/config";
 import {
   AppError,
   type TranscriptionInput,
+  type TranscriptionProvider,
   type TranscriptionResult,
   type TranscriptSegment,
   type Word,
-} from "@raw-edit/contracts";
-
-export interface TranscriptionProvider {
-  readonly name: string;
-  transcribe(input: TranscriptionInput): Promise<TranscriptionResult>;
-}
+} from "@raw-edit/core";
 
 function wordsFromSegment(text: string, startMs: number, endMs: number): Word[] {
   const tokens = text.split(/\s+/).filter(Boolean);
@@ -164,13 +160,29 @@ export function createDeepgramProvider(apiKey = loadConfig().transcriptionApiKey
   };
 }
 
+function requireWordLevel(provider: TranscriptionProvider): TranscriptionProvider {
+  if (!provider.transcribe) {
+    throw new AppError("TRANSCRIPTION_FAILED", "Transcription provider cannot supply word-level timestamps", 500, true);
+  }
+  return {
+    name: provider.name,
+    async transcribe(input) {
+      const result = await provider.transcribe(input);
+      if (!result.segments.every((segment) => segment.words?.length)) {
+        throw new AppError("TRANSCRIPTION_FAILED", "Provider returned no word-level timestamps", 502, true);
+      }
+      return result;
+    },
+  };
+}
+
 export function getTranscriptionProvider(name = loadConfig().transcriptionProvider): TranscriptionProvider {
   switch (name) {
     case "faster-whisper":
-      return createFasterWhisperProvider();
+      return requireWordLevel(createFasterWhisperProvider());
     case "deepgram":
-      return createDeepgramProvider();
+      return requireWordLevel(createDeepgramProvider());
     default:
-      return createOpenAiWhisperProvider();
+      return requireWordLevel(createOpenAiWhisperProvider());
   }
 }

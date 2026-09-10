@@ -1,10 +1,11 @@
 import {
   DEFAULT_MIN_SILENCE_MS,
-  DEFAULT_PRE_ROLL_MS,
   DEFAULT_POST_ROLL_MS,
+  DEFAULT_PRE_ROLL_MS,
   type EditSegment,
-} from "@raw-edit/contracts";
-import { clampRange, type MsRange } from "./ranges";
+  type TranscriptSegment,
+} from "./types";
+import { clampRange, intersectRanges, type MsRange } from "./ranges";
 
 export type SilenceSettings = {
   minSilenceMs: number;
@@ -17,6 +18,26 @@ export const DEFAULT_SILENCE_SETTINGS: SilenceSettings = {
   preRollMs: DEFAULT_PRE_ROLL_MS,
   postRollMs: DEFAULT_POST_ROLL_MS,
 };
+
+export function transcriptGaps(segments: TranscriptSegment[], durationMs: number): MsRange[] {
+  const ordered = [...segments].sort((a, b) => a.startMs - b.startMs);
+  const gaps: MsRange[] = [];
+  let cursor = 0;
+  for (const segment of ordered) {
+    if (segment.startMs - cursor >= 1) gaps.push({ startMs: cursor, endMs: segment.startMs });
+    cursor = Math.max(cursor, segment.endMs);
+  }
+  if (durationMs - cursor >= 1) gaps.push({ startMs: cursor, endMs: durationMs });
+  return gaps;
+}
+
+export function confirmedSilence(
+  acoustic: MsRange[],
+  transcript: TranscriptSegment[],
+  durationMs: number,
+): MsRange[] {
+  return intersectRanges(acoustic, transcriptGaps(transcript, durationMs));
+}
 
 export function silenceRemovals(
   silences: MsRange[],
@@ -41,6 +62,15 @@ export function silenceRemovals(
     });
   }
   return decisions;
+}
+
+export function dualSignalSilenceRemovals(
+  acoustic: MsRange[],
+  transcript: TranscriptSegment[],
+  durationMs: number,
+  settings: SilenceSettings = DEFAULT_SILENCE_SETTINGS,
+): EditSegment[] {
+  return silenceRemovals(confirmedSilence(acoustic, transcript, durationMs), durationMs, settings);
 }
 
 export function parseSilencedetect(stderr: string): MsRange[] {

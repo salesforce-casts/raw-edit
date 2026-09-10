@@ -11,8 +11,8 @@ import { enqueueJob } from "@/server/jobs";
 import { logger } from "@/server/logger";
 
 const schema = z.object({
-  preset: z.enum(["HIGH_QUALITY", "SMALLER_FILE", "HEVC_HIGH_QUALITY"]).default("HIGH_QUALITY"),
-  strategy: z.enum(["PRESERVE_HDR", "COMPATIBLE_SDR"]).default("COMPATIBLE_SDR"),
+  preset: z.enum(["HIGH_QUALITY", "SOCIAL", "SMALLER_FILE", "HEVC_HIGH_QUALITY"]).default("HIGH_QUALITY"),
+  strategy: z.enum(["PRESERVE_HDR", "COMPATIBLE_SDR"]).optional(),
 });
 
 export async function POST(request: Request, context: { params: Promise<{ videoId: string }> }) {
@@ -37,7 +37,9 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
         videoId: video.id,
         editVersionId: version.id,
         preset: body.preset,
-        strategy: video.hdrType && video.hdrType !== "SDR" ? body.strategy : "COMPATIBLE_SDR",
+        strategy:
+          body.strategy ??
+          (video.hdrType && video.hdrType !== "SDR" ? "PRESERVE_HDR" : "COMPATIBLE_SDR"),
         status: "PENDING",
         width: video.width,
         height: video.height,
@@ -52,6 +54,7 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
       userId: user.id,
       type: "RENDER_EXPORT",
       exportId: record.id,
+      inputVersion: `${version.versionNumber}|${body.preset}|${record.strategy}`,
       payload: { exportId: record.id, storageKey },
     });
     logger.info({ event: "export_started", userId: user.id, videoId: video.id, exportId: record.id }, "export_started");

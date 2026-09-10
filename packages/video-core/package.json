@@ -7,14 +7,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@raw-edit/contracts": "workspace:*"
+    "@raw-edit/core": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.2"
   }
 }

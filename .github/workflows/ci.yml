@@ -18,5 +18,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @raw-edit/video-core test
+      - run: pnpm --filter @raw-edit/core test
       - run: pnpm --filter @raw-edit/web typecheck
+      - run: pnpm --filter @raw-edit/worker typecheck

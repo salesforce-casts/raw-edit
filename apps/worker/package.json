@@ -11,15 +11,19 @@
   "dependencies": {
     "@raw-edit/ai": "workspace:*",
     "@raw-edit/config": "workspace:*",
+    "@raw-edit/core": "workspace:*",
     "@raw-edit/contracts": "workspace:*",
     "@raw-edit/db": "workspace:*",
+    "@raw-edit/imports": "workspace:*",
+    "@raw-edit/media": "workspace:*",
     "@raw-edit/queue": "workspace:*",
     "@raw-edit/storage": "workspace:*",
     "@raw-edit/transcription": "workspace:*",
-    "@raw-edit/video-core": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "pino": "^9.9.0"
   },
   "devDependencies": {
+    "@types/node": "^22.13.10",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

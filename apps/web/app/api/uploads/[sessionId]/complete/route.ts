@@ -1,22 +1,22 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { getDb, uploadParts, uploadSessions, videos } from "@raw-edit/db";
-import { AppError } from "@raw-edit/contracts";
-import { createR2Storage } from "@raw-edit/storage";
-import { assertTransition } from "@raw-edit/video-core";
+import { getDb, uploadSessions, videos } from "@raw-edit/db";
+import { AppError, assertTransition } from "@raw-edit/core";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { requireOwnedUploadSession } from "@/server/upload-session";
 import { enqueueJob } from "@/server/jobs";
 import { logger } from "@/server/logger";
+import { getWebContainer } from "@/lib/container";
 
-export async function POST(_: Request, context: { params: Promise<{ sessionId: string }> }) {
+export async function POST(request: Request, context: { params: Promise<{ sessionId: string }> }) {
   try {
     const user = await requireUser();
     const { sessionId } = await context.params;
     const { session, video } = await requireOwnedUploadSession(user.id, sessionId);
-    const storage = createR2Storage();
+    const storage = getWebContainer().storage;
     const db = getDb();
+    const body = (await request.json().catch(() => ({}))) as { sha256?: string };
 
     await db
       .update(uploadSessions)
@@ -25,13 +25,9 @@ export async function POST(_: Request, context: { params: Promise<{ sessionId: s
 
     if (session.uploadType === "multipart") {
       if (!session.providerUploadId) throw new AppError("UPLOAD_PART_FAILED", "Missing multipart upload id", 400);
-      const parts = await db.select().from(uploadParts).where(eq(uploadParts.uploadSessionId, session.id));
-      if (parts.length === 0) throw new AppError("UPLOAD_PART_FAILED", "No completed parts", 400);
-      await storage.completeMultipartUpload(
-        session.storageKey,
-        session.providerUploadId,
-        parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag ?? "" })),
-      );
+      const listed = await storage.listParts(session.storageKey, session.providerUploadId);
+      if (listed.length === 0) throw new AppError("UPLOAD_PART_FAILED", "R2 reports no completed parts", 400);
+      await storage.completeMultipartUpload(session.storageKey, session.providerUploadId, listed);
     }
 
     const head = await storage.head(session.storageKey);
@@ -50,6 +46,7 @@ export async function POST(_: Request, context: { params: Promise<{ sessionId: s
         status: "UPLOADED",
         sizeBytes: head.contentLength,
         r2Etag: head.etag,
+        clientSha256: body.sha256 ?? video.clientSha256,
         progress: 0,
         progressMessage: "Upload complete",
         updatedAt: new Date(),
@@ -60,7 +57,12 @@ export async function POST(_: Request, context: { params: Promise<{ sessionId: s
       .set({ status: "COMPLETED", completedAt: new Date(), updatedAt: new Date() })
       .where(eq(uploadSessions.id, session.id));
 
-    await enqueueJob({ videoId: video.id, userId: user.id, type: "ANALYZE_VIDEO" });
+    await enqueueJob({
+      videoId: video.id,
+      userId: user.id,
+      type: "ANALYZE_VIDEO",
+      inputVersion: body.sha256 ?? video.clientSha256 ?? session.storageKey,
+    });
     logger.info({ event: "video_upload_completed", userId: user.id, videoId: video.id }, "upload_complete");
     return NextResponse.json({ ok: true, sizeBytes: head.contentLength });
   } catch (error) {

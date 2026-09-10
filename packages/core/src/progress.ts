@@ -25,3 +25,9 @@ export function renderProgress(processedMs: number, expectedMs: number): number 
   if (expectedMs <= 0) return 0;
   return Math.min(99, Math.round((processedMs / expectedMs) * 100));
 }
+
+export const PROGRESS_CHANNEL_PREFIX = "rawedit:progress:";
+
+export function progressChannel(videoId: string): string {
+  return `${PROGRESS_CHANNEL_PREFIX}${videoId}`;
+}

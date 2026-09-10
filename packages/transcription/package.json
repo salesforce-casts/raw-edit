@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "@raw-edit/config": "workspace:*",
-    "@raw-edit/contracts": "workspace:*"
+    "@raw-edit/core": "workspace:*"
   }
 }

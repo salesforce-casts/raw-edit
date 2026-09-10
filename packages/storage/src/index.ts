@@ -1,7 +1,9 @@
+import { IncrementalSha256, originalsKey, type CompletedPart, type StorageProvider } from "@raw-edit/core";
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -17,31 +19,13 @@ import { SIGNED_URL_TTL_SECONDS } from "@raw-edit/contracts";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { createHash } from "node:crypto";
 
-export type CompletedPart = { partNumber: number; etag: string };
-
-export interface StorageProvider {
-  createMultipartUpload(key: string, mimeType: string): Promise<{ uploadId: string }>;
-  signPart(key: string, uploadId: string, partNumber: number, ttlSeconds?: number): Promise<string>;
-  signPut(key: string, mimeType: string, ttlSeconds?: number): Promise<string>;
-  completeMultipartUpload(key: string, uploadId: string, parts: CompletedPart[]): Promise<{ etag?: string }>;
-  abortMultipartUpload(key: string, uploadId: string): Promise<void>;
-  listParts(key: string, uploadId: string): Promise<CompletedPart[]>;
-  head(key: string): Promise<{ contentLength: number; etag?: string; contentType?: string }>;
-  signGet(key: string, ttlSeconds: number, filename?: string): Promise<string>;
-  putObject(key: string, body: Buffer | Uint8Array, mimeType: string): Promise<void>;
-  downloadToFile(key: string, destPath: string): Promise<{ sizeBytes: number; sha256: string }>;
-  deletePrefix(prefix: string): Promise<void>;
-}
 
 export function objectKeys(userId: string, videoId: string) {
   const root = `users/${userId}/videos/${videoId}`;
   return {
-    original: (filename: string) => {
-      const ext = filename.includes(".") ? filename.slice(filename.lastIndexOf(".")) : ".mov";
-      return `${root}/source/original${ext.toLowerCase()}`;
-    },
+    original: (filename: string) => originalsKey(userId, videoId, filename),
+    originalsPrefix: `${root}/originals/`,
     proxy: `${root}/proxy/720p.mp4`,
     audio: `${root}/audio/transcription.wav`,
     thumb: `${root}/thumb/poster.jpg`,
@@ -49,6 +33,9 @@ export function objectKeys(userId: string, videoId: string) {
     prefix: `${root}/`,
   };
 }
+
+export { originalsKey };
+export type { CompletedPart, StorageProvider };
 
 export function createR2Storage(config = loadConfig()): StorageProvider {
   const endpoint =
@@ -182,7 +169,7 @@ export function createR2Storage(config = loadConfig()): StorageProvider {
     async downloadToFile(key, destPath) {
       const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
       if (!result.Body) throw new Error("Empty object body");
-      const hash = createHash("sha256");
+      const hash = new IncrementalSha256();
       let sizeBytes = 0;
       const body = result.Body as Readable;
       body.on("data", (chunk: Buffer) => {
@@ -190,7 +177,11 @@ export function createR2Storage(config = loadConfig()): StorageProvider {
         hash.update(chunk);
       });
       await pipeline(body, createWriteStream(destPath));
-      return { sizeBytes, sha256: hash.digest("hex") };
+      return { sizeBytes, sha256: hash.digestHex() };
+    },
+
+    async deleteKey(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
 
     async deletePrefix(prefix) {

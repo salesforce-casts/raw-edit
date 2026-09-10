@@ -1,43 +1,45 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { loadConfig } from "@raw-edit/config";
-import { AppError } from "@raw-edit/contracts";
-import { getDb, editSegments, editVersions, transcriptSegments, transcripts, usageRecords, videos } from "@raw-edit/db";
-import { createR2Storage } from "@raw-edit/storage";
-import { getTranscriptionProvider } from "@raw-edit/transcription";
-import { createBullmqQueue, queueNameForJob, type QueueJobPayload } from "@raw-edit/queue";
-import { claimJob, finishJob } from "./lock";
+import { AppError, keepAllEdl } from "@raw-edit/core";
+import { editSegments, editVersions, transcriptSegments, transcripts, usageRecords, videos } from "@raw-edit/db";
+import type { QueueJobPayload } from "@raw-edit/queue";
+import { getWorkerContext } from "../lib/context";
+import { enqueueJob } from "../lib/enqueue";
+import { claimJob, finishJob, startHeartbeat } from "./lock";
 
 async function writeKeepAllEdl(videoId: string, durationMs: number) {
-  const db = getDb();
+  const db = getWorkerContext().db;
   await db.update(editVersions).set({ isCurrent: false }).where(eq(editVersions.videoId, videoId));
   const [version] = await db
     .insert(editVersions)
     .values({ videoId, versionNumber: 1, createdBy: "system", isCurrent: true })
     .returning();
-  await db.insert(editSegments).values({
-    editVersionId: version.id,
-    sequenceNumber: 0,
-    startMs: 0,
-    endMs: durationMs,
-    action: "KEEP",
-    source: "SYSTEM",
-    reason: "Full timeline kept until automatic detection runs",
-    confidence: 1,
-  });
+  const covering = keepAllEdl(durationMs);
+  await db.insert(editSegments).values(
+    covering.map((segment, index) => ({
+      editVersionId: version.id,
+      sequenceNumber: index,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      action: segment.action,
+      source: segment.source ?? "SYSTEM",
+      reason: segment.reason,
+      confidence: segment.confidence,
+    })),
+  );
 }
 
 export async function processTranscribeVideo(payload: QueueJobPayload) {
-  const claimed = await claimJob(payload.jobId);
+  const claimed = await claimJob(payload.jobId, payload.idempotencyKey);
   if (!claimed || claimed.alreadyDone) return;
-  const config = loadConfig();
+  const { config, db, storage, transcription, queue } = getWorkerContext();
   const workDir = join(config.scratchDir, payload.jobId);
-  const db = getDb();
+  const stopHeartbeat = startHeartbeat(payload.jobId);
   try {
     await mkdir(workDir, { recursive: true });
     const [video] = await db.select().from(videos).where(eq(videos.id, payload.videoId)).limit(1);
-    if (!video) throw new AppError("NOT_FOUND", "Video missing", 404);
+    if (!video) throw new AppError("NOT_FOUND", "Video missing", 404, true);
 
     if (!config.transcriptionApiKey && config.transcriptionProvider === "openai") {
       await writeKeepAllEdl(video.id, video.durationMs ?? 0);
@@ -50,14 +52,15 @@ export async function processTranscribeVideo(payload: QueueJobPayload) {
           updatedAt: new Date(),
         })
         .where(eq(videos.id, video.id));
-      await finishJob(payload.jobId, "COMPLETED");
+      await queue.publishProgress(video.id, { status: "READY_FOR_REVIEW", progress: 100 });
+      await finishJob(payload.jobId, "SUCCEEDED");
       return;
     }
 
-    if (!video.audioStorageKey) throw new AppError("SOURCE_MISSING", "Analysis audio missing", 404);
+    if (!video.audioStorageKey) throw new AppError("SOURCE_MISSING", "Analysis audio missing", 404, true);
     const audioPath = join(workDir, "transcription.wav");
-    await createR2Storage().downloadToFile(video.audioStorageKey, audioPath);
-    const result = await getTranscriptionProvider().transcribe({
+    await storage.downloadToFile(video.audioStorageKey, audioPath);
+    const result = await transcription.transcribe({
       audioPath,
       videoId: video.id,
       jobId: payload.jobId,
@@ -99,39 +102,37 @@ export async function processTranscribeVideo(payload: QueueJobPayload) {
     await db
       .update(videos)
       .set({
-        status: "DETECTING_EDITS",
+        status: "DETECTING_TAKES",
         progress: 65,
         progressMessage: "Finding silence and retakes",
         updatedAt: new Date(),
       })
       .where(eq(videos.id, video.id));
 
-    const queue = createBullmqQueue();
-    const [next] = await db
-      .insert((await import("@raw-edit/db")).processingJobs)
-      .values({ videoId: video.id, type: "DETECT_AUTOMATIC_EDITS", status: "QUEUED", payload: { userId: payload.userId } })
-      .returning();
-    const bullmqJobId = await queue.enqueue(queueNameForJob("DETECT_AUTOMATIC_EDITS"), {
-      jobId: next.id,
+    await enqueueJob({
       videoId: video.id,
       userId: payload.userId,
       type: "DETECT_AUTOMATIC_EDITS",
+      inputVersion: `${video.sourceSha256 ?? payload.inputVersion ?? "source"}|${video.silenceThresholdMs}`,
     });
-    await db
-      .update((await import("@raw-edit/db")).processingJobs)
-      .set({ bullmqJobId })
-      .where(eq((await import("@raw-edit/db")).processingJobs.id, next.id));
-    await finishJob(payload.jobId, "COMPLETED");
+    await queue.publishProgress(video.id, { status: "DETECTING_TAKES", progress: 65 });
+    await finishJob(payload.jobId, "SUCCEEDED");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Transcription failed";
     const code = error instanceof AppError ? error.code : "TRANSCRIPTION_FAILED";
-    await getDb()
-      .update(videos)
+    const permanent = error instanceof AppError ? error.permanent : false;
+    await getWorkerContext()
+      .db.update(videos)
       .set({ status: "FAILED", errorCode: code, errorMessage: message, updatedAt: new Date() })
       .where(eq(videos.id, payload.videoId));
-    await finishJob(payload.jobId, "FAILED", { errorCode: code, errorMessage: message });
+    await finishJob(payload.jobId, permanent ? "DEAD" : "FAILED", {
+      errorCode: code,
+      errorMessage: message,
+      errorClass: permanent ? "permanent" : "transient",
+    });
     throw error;
   } finally {
+    stopHeartbeat();
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

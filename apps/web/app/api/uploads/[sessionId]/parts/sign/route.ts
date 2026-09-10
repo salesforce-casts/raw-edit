@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AppError, PRESIGN_BATCH_SIZE, SIGNED_URL_TTL_SECONDS } from "@raw-edit/contracts";
-import { createR2Storage } from "@raw-edit/storage";
+import { AppError, PRESIGN_BATCH_SIZE, SIGNED_URL_TTL_SECONDS } from "@raw-edit/core";
+import { getWebContainer } from "@/lib/container";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { requireOwnedUploadSession } from "@/server/upload-session";
@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
     const { session } = await requireOwnedUploadSession(user.id, sessionId);
     if (!session.providerUploadId) throw new AppError("UPLOAD_PART_FAILED", "Not a multipart upload", 400);
     const body = schema.parse(await request.json());
-    const storage = createR2Storage();
+    const storage = getWebContainer().storage;
     const expiresAt = new Date(Date.now() + SIGNED_URL_TTL_SECONDS.uploadPart * 1000).toISOString();
     const parts = await Promise.all(
       body.partNumbers.map(async (partNumber) => ({

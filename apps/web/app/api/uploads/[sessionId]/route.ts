@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, uploadParts } from "@raw-edit/db";
-import { createR2Storage } from "@raw-edit/storage";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { requireOwnedUploadSession } from "@/server/upload-session";
+import { getWebContainer } from "@/lib/container";
 
 export async function GET(_: Request, context: { params: Promise<{ sessionId: string }> }) {
   try {
@@ -22,7 +22,7 @@ export async function GET(_: Request, context: { params: Promise<{ sessionId: st
     }));
     if (session.providerUploadId) {
       try {
-        const listed = await createR2Storage().listParts(session.storageKey, session.providerUploadId);
+        const listed = await getWebContainer().storage.listParts(session.storageKey, session.providerUploadId);
         providerParts = listed.map((part) => ({
           partNumber: part.partNumber,
           etag: part.etag,
@@ -57,7 +57,7 @@ export async function DELETE(_: Request, context: { params: Promise<{ sessionId:
     const { sessionId } = await context.params;
     const { session } = await requireOwnedUploadSession(user.id, sessionId);
     if (session.providerUploadId) {
-      await createR2Storage().abortMultipartUpload(session.storageKey, session.providerUploadId);
+      await getWebContainer().storage.abortMultipartUpload(session.storageKey, session.providerUploadId);
     }
     await getDb()
       .update((await import("@raw-edit/db")).uploadSessions)
