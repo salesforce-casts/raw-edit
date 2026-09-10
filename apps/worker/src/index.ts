@@ -111,7 +111,14 @@ async function processJob(ctx: WorkerContext, job: Job): Promise<unknown> {
   }
 
   const attempt = job.attemptsMade + 1;
-  const tracker = await JobTracker.claim(ctx, { videoId, type, attempt });
+  // BullMQ's job id IS the idempotency key (set when enqueuing), so this claims the
+  // exact processing_job row this delivery is for.
+  const tracker = await JobTracker.claim(ctx, {
+    videoId,
+    type,
+    attempt,
+    idempotencyKey: job.id,
+  });
   if (!tracker) return { skipped: 'not-claimable' };
 
   try {

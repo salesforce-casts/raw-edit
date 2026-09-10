@@ -42,9 +42,13 @@ export function assertVideoTransition(from: VideoStatus, to: VideoStatus): void 
 export const JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
   QUEUED: ['RUNNING', 'CANCELLED', 'DEAD'],
   RUNNING: ['SUCCEEDED', 'FAILED', 'CANCELLED'],
-  // A failed job goes back to QUEUED for a retry, or DEAD once attempts run out.
-  FAILED: ['QUEUED', 'DEAD'],
+  // A retry delivery claims a FAILED row directly: the queue holds the backoff, so
+  // the row goes FAILED -> RUNNING without passing through QUEUED again. The same
+  // applies to a job the sweeper reclaimed from a worker that stopped responding.
+  FAILED: ['QUEUED', 'RUNNING', 'DEAD'],
   SUCCEEDED: [],
+  // A dead-lettered job must be re-queued deliberately rather than picked straight
+  // back up, so that a permanent failure cannot quietly loop.
   DEAD: ['QUEUED'],
   CANCELLED: ['QUEUED'],
 };

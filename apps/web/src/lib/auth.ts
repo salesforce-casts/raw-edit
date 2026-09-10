@@ -4,7 +4,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { nextCookies } from 'better-auth/next-js';
 import { getDb, schema } from '@rawedit/db';
 import { newId } from '@rawedit/core';
-import { appUrl } from './container.js';
+import { appUrl } from './container';
 
 /**
  * Better Auth over the same Drizzle schema the rest of the app uses, so `user.id` is

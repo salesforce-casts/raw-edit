@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 import { assertJobTransition, isRetryable } from '@rawedit/core';
 import { processingJob, setVideoProgress, setVideoStatus, type Database } from '@rawedit/db';
 import type { JobStatus, JobType, VideoStatus } from '@rawedit/core';
@@ -27,22 +27,42 @@ export class JobTracker {
   ) {}
 
   /**
-   * Claim the job. Returns false when another replica already holds it, which is how
-   * a duplicate delivery is made harmless.
+   * Claim the job. Returns null when there is nothing to do — the job already
+   * succeeded, was cancelled, or another replica holds a live lock on it — which is
+   * how a duplicate delivery is made harmless.
+   *
+   * The lookup is by idempotency key, not by (video, type). A video can legitimately
+   * have several jobs of the same type over its life (a second export preset, a
+   * re-render after an edit), and matching on the pair would find the oldest one and
+   * skip the work that was actually queued.
    */
   static async claim(
     ctx: WorkerContext,
-    input: { videoId: string; type: JobType; attempt: number },
+    input: { videoId: string; type: JobType; attempt: number; idempotencyKey?: string },
   ): Promise<JobTracker | null> {
-    const rows = await ctx.db
-      .select()
-      .from(processingJob)
-      .where(and(eq(processingJob.videoId, input.videoId), eq(processingJob.type, input.type)))
-      .limit(1);
+    const row = input.idempotencyKey
+      ? (
+          await ctx.db
+            .select()
+            .from(processingJob)
+            .where(eq(processingJob.idempotencyKey, input.idempotencyKey))
+            .limit(1)
+        )[0]
+      : // No key (a direct call, as in the tests): take the newest job of this type.
+        (
+          await ctx.db
+            .select()
+            .from(processingJob)
+            .where(and(eq(processingJob.videoId, input.videoId), eq(processingJob.type, input.type)))
+            .orderBy(desc(processingJob.queuedAt))
+            .limit(1)
+        )[0];
 
-    const row = rows[0];
     if (!row) {
-      logger.warn({ videoId: input.videoId, type: input.type }, 'No processing_job row for this job');
+      logger.warn(
+        { videoId: input.videoId, type: input.type, idempotencyKey: input.idempotencyKey },
+        'No processing_job row for this job',
+      );
       return null;
     }
 
@@ -215,7 +235,13 @@ export async function markVideoFailed(
   }
 }
 
-/** Reclaim jobs whose worker died mid-run. */
+/**
+ * Reclaim jobs whose worker died mid-run.
+ *
+ * The comparison uses drizzle's typed `lt` rather than a raw `sql` fragment: a
+ * `Date` interpolated into raw SQL reaches postgres.js untyped and the driver
+ * rejects it, which made every sweep throw instead of reclaiming anything.
+ */
 export async function sweepStaleJobs(ctx: WorkerContext): Promise<number> {
   const cutoff = new Date(Date.now() - env.staleJobAfterMs);
   const reclaimed = await ctx.db
@@ -224,7 +250,7 @@ export async function sweepStaleJobs(ctx: WorkerContext): Promise<number> {
     .where(
       and(
         eq(processingJob.status, 'RUNNING'),
-        sql`(${processingJob.heartbeatAt} is null or ${processingJob.heartbeatAt} < ${cutoff})`,
+        or(isNull(processingJob.heartbeatAt), lt(processingJob.heartbeatAt, cutoff)),
       ),
     )
     .returning({ id: processingJob.id });

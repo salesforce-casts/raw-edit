@@ -64,8 +64,21 @@ describe('job state machine', () => {
     expect(() => assertJobTransition('FAILED', 'DEAD')).not.toThrow();
   });
 
+  it('lets a retry delivery claim a failed job directly', () => {
+    // The queue owns the backoff, so a retried job goes FAILED -> RUNNING without
+    // passing through QUEUED. The same path is taken by a job the sweeper reclaimed
+    // from a worker that stopped responding.
+    expect(() => assertJobTransition('FAILED', 'RUNNING')).not.toThrow();
+  });
+
   it('will not resurrect a succeeded job', () => {
     expect(() => assertJobTransition('SUCCEEDED', 'RUNNING')).toThrow();
+  });
+
+  it('makes a dead-lettered job be re-queued deliberately', () => {
+    // Otherwise a permanent failure could loop without anyone deciding to retry it.
+    expect(() => assertJobTransition('DEAD', 'RUNNING')).toThrow();
+    expect(() => assertJobTransition('DEAD', 'QUEUED')).not.toThrow();
   });
 });
 
