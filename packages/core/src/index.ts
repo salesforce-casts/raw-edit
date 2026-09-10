@@ -1,5 +1,6 @@
 // Types
 export * from './types/media.js';
+export * from './types/media-row.js';
 export * from './types/transcript.js';
 export * from './types/edl.js';
 export * from './types/takes.js';

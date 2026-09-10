@@ -1,0 +1,32 @@
+{
+  "name": "@rawedit/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@rawedit/core": "*",
+    "@rawedit/db": "*",
+    "@rawedit/imports": "*",
+    "@rawedit/media": "*",
+    "@rawedit/queue": "*",
+    "@rawedit/storage": "*",
+    "@rawedit/transcription": "*",
+    "bullmq": "^5.81.4",
+    "ioredis": "^5.11.1",
+    "pino": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
