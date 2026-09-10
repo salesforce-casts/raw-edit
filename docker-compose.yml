@@ -1,0 +1,116 @@
+# Local backing services.
+#
+#   docker compose up -d
+#   npm run db:migrate
+#   npm run dev          # web app
+#   npm run dev:worker   # media worker
+#
+# The worker is included but not started by default: running it from your shell
+# gives you a faster edit-reload loop. Start the containerised one with:
+#
+#   docker compose --profile worker up -d
+#
+# `scripts/dev-services.sh` uses this file when Docker is available and falls back
+# to native binaries when it is not.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rawedit
+      POSTGRES_PASSWORD: rawedit
+      POSTGRES_DB: rawedit
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rawedit -d rawedit']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No persistence: the queue is a cache, `processing_job` is the truth.
+    command: redis-server --save '' --appendonly no
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Stands in for Cloudflare R2. Both speak the S3 API, so the application code
+  # is identical and only the endpoint changes.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: rawedit
+      MINIO_ROOT_PASSWORD: rawedit123
+    ports:
+      - '9000:9000'   # S3 API
+      - '9001:9001'   # web console, http://localhost:9001
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the bucket once MinIO is up, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 rawedit rawedit123 &&
+      mc mb --ignore-existing local/rawedit-dev &&
+      echo 'Bucket rawedit-dev ready.'
+      "
+
+  worker:
+    profiles: ['worker']
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      args:
+        # Self-hosted transcription, so local development needs no API key.
+        INSTALL_FASTER_WHISPER: '1'
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://rawedit:rawedit@postgres:5432/rawedit
+      REDIS_URL: redis://redis:6379
+      R2_BUCKET: rawedit-dev
+      R2_ENDPOINT: http://minio:9000
+      R2_ACCESS_KEY_ID: rawedit
+      R2_SECRET_ACCESS_KEY: rawedit123
+      R2_REGION: auto
+      TRANSCRIPTION_PROVIDER: faster-whisper
+      FASTER_WHISPER_MODEL: base.en
+      FASTER_WHISPER_DEVICE: cpu
+      WORKER_CONCURRENCY: '2'
+      LOG_LEVEL: info
+    volumes:
+      # Renders write multi-gigabyte scratch files; keep them off the image layer.
+      - worker-tmp:/tmp/rawedit
+
+volumes:
+  postgres-data:
+  minio-data:
+  worker-tmp:
