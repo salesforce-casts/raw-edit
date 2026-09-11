@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_: Request, context: { params: Promise<{ videoId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ videoId: string }> }) {
   const user = await requireUser();
   const { videoId } = await context.params;
   await requireOwnedVideo(user.id, videoId);
@@ -22,11 +22,6 @@ export async function GET(_: Request, context: { params: Promise<{ videoId: stri
         if (video) send({ status: video.status, progress: video.progress, progressMessage: video.progressMessage });
       };
       await poll();
-      try {
-        unsubscribe = await getWebContainer().queue.subscribeProgress(videoId, (payload) => send(payload));
-      } catch {
-        unsubscribe = undefined;
-      }
       const timer = setInterval(() => {
         void poll();
       }, 2000);
@@ -39,8 +34,12 @@ export async function GET(_: Request, context: { params: Promise<{ videoId: stri
           /* already closed */
         }
       };
-      const abort = (_: unknown) => close();
-      void abort;
+      request.signal.addEventListener("abort", close);
+      try {
+        unsubscribe = await getWebContainer().queue.subscribeProgress(videoId, (payload) => send(payload));
+      } catch {
+        unsubscribe = undefined;
+      }
     },
     async cancel() {
       await unsubscribe?.();

@@ -41,6 +41,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const [completedExportId, setCompletedExportId] = useState<string>();
   const [words, setWords] = useState<Word[]>([]);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [resetting, setResetting] = useState(false);
+  const statusRef = useRef<string | undefined>(undefined);
 
   async function load() {
     const [videoRes, editRes, transcriptRes] = await Promise.all([
@@ -51,6 +53,10 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     if (videoRes.ok) {
       const json = (await videoRes.json()) as { video: VideoRow; latestExport?: { id: string } | null };
       setVideo(json.video);
+      statusRef.current = json.video.status;
+      if (json.video.status === "READY_FOR_REVIEW" || json.video.status === "COMPLETE" || json.video.status === "FAILED") {
+        setResetting(false);
+      }
       setCompletedExportId(json.latestExport?.id);
     }
     if (editRes.ok) {
@@ -79,32 +85,46 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     }
   }
 
+  function applyStatus(json: Partial<VideoRow> & { status?: string }) {
+    if (!json.status) return;
+    const previous = statusRef.current;
+    statusRef.current = json.status;
+    setVideo((current) => (current ? { ...current, ...json } : current));
+    const settled = json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE";
+    const failed = json.status === "FAILED";
+    if (settled && previous && previous !== json.status) {
+      setResetting(false);
+      void load();
+      void loadProxy();
+      if (previous === "DETECTING_TAKES" || previous === "TRANSCRIBING" || previous === "DETECTING_EDITS") {
+        toast.success("Automatic edits updated");
+      }
+      return;
+    }
+    if (failed && previous && previous !== json.status) {
+      setResetting(false);
+      void load();
+      toast.error(json.errorMessage ?? "Re-analysis failed");
+      return;
+    }
+    void loadProxy();
+  }
+
   useEffect(() => {
     void load();
     const events = new EventSource(`/api/videos/${videoId}/events`);
     events.onmessage = (event) => {
       try {
-        const json = JSON.parse(event.data) as VideoRow;
-        setVideo((current) => (current ? { ...current, ...json } : current));
-        if (json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE") {
-          void load();
-          void loadProxy();
-        } else {
-          void loadProxy();
-        }
+        applyStatus(JSON.parse(event.data) as VideoRow);
       } catch {
         /* ignore malformed progress */
       }
     };
     const timer = window.setInterval(() => {
       void fetch(`/api/videos/${videoId}/status`)
-        .then((response) => response.json())
+        .then((response) => (response.ok ? response.json() : null))
         .then((json) => {
-          setVideo((current) => (current ? { ...current, ...json } : current));
-          if (json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE") {
-            void load();
-          }
-          void loadProxy();
+          if (json) applyStatus(json as VideoRow);
         })
         .catch(() => undefined);
     }, 4000);
@@ -172,6 +192,47 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       (segment) => segment.action === "REMOVE" && currentMs >= segment.startMs && currentMs < segment.endMs,
     );
     if (hit) el.currentTime = hit.endMs / 1000;
+  }
+
+  async function resetAutomaticEdits() {
+    setResetting(true);
+    setVideo((current) =>
+      current
+        ? {
+            ...current,
+            status: "DETECTING_TAKES",
+            progress: 65,
+            progressMessage: "Re-analysing edits",
+            errorMessage: null,
+          }
+        : current,
+    );
+    statusRef.current = "DETECTING_TAKES";
+    try {
+      const response = await fetch(`/api/videos/${videoId}/edit/reanalyse`, { method: "POST" });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+        status?: string;
+        progress?: number;
+        progressMessage?: string;
+      };
+      if (!response.ok) {
+        toast.error(body.error?.message ?? "Could not reset automatic edits");
+        setResetting(false);
+        await load();
+        return;
+      }
+      applyStatus({
+        status: body.status ?? "DETECTING_TAKES",
+        progress: body.progress,
+        progressMessage: body.progressMessage ?? "Re-analysing edits",
+      });
+      toast.message("Re-running automatic edits");
+    } catch {
+      toast.error("Could not reset automatic edits");
+      setResetting(false);
+      await load();
+    }
   }
 
   async function startExport() {
@@ -358,14 +419,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         <Button variant="outline" onClick={redo} disabled={future.length === 0}>
           Redo
         </Button>
-        <Button
-          variant="outline"
-          onClick={() => {
-            void fetch(`/api/videos/${videoId}/edit/reanalyse`, { method: "POST" });
-            toast.message("Re-running automatic edits");
-          }}
-        >
-          Reset automatic edits
+        <Button variant="outline" onClick={() => void resetAutomaticEdits()} disabled={resetting}>
+          {resetting ? "Re-running…" : "Reset automatic edits"}
         </Button>
       </div>
     </div>
@@ -388,7 +443,9 @@ function SegmentCopy({
   return (
     <div className="mt-1 space-y-1">
       <div className={expanded || !long ? "whitespace-pre-wrap" : "line-clamp-2"}>{primary}</div>
-      {segment.reason ? <div className="text-xs text-muted-foreground">{segment.reason}</div> : null}
+      {segment.reason && segment.reason !== "Retained speech" ? (
+        <div className="text-xs text-muted-foreground">{segment.reason}</div>
+      ) : null}
       {long ? (
         <button type="button" className="text-xs underline" onClick={onToggleExpand}>
           {expanded ? "Collapse" : "Expand"}
