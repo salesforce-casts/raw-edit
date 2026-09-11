@@ -29,8 +29,9 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
   try {
     const [video] = await db.select().from(videos).where(eq(videos.id, payload.videoId)).limit(1);
     if (!video?.sourceStorageKey) throw new AppError("SOURCE_MISSING", "Original missing", 404, true);
-    const sourceUrl = await storage.signGet(video.sourceStorageKey, config.sourceUrlTtlSeconds);
-    const acoustic = await media.detectSilence(sourceUrl, video.silenceThresholdMs / 1000);
+    const analysisStorageKey = video.audioStorageKey ?? video.sourceStorageKey;
+    const analysisUrl = await storage.signGet(analysisStorageKey, config.sourceUrlTtlSeconds);
+    const acoustic = await media.detectSilence(analysisUrl, video.silenceThresholdMs / 1000);
 
     const [transcript] = await db.select().from(transcripts).where(eq(transcripts.videoId, video.id)).limit(1);
     const rows = transcript
@@ -95,8 +96,8 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
         covering.map((segment, index) => ({
           editVersionId: version.id,
           sequenceNumber: index,
-          startMs: segment.startMs,
-          endMs: segment.endMs,
+          startMs: Math.round(segment.startMs),
+          endMs: Math.round(segment.endMs),
           action: segment.action,
           source: segment.source ?? "SYSTEM",
           reason: segment.reason,
