@@ -54,7 +54,7 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
       userId: user.id,
       type: "RENDER_EXPORT",
       exportId: record.id,
-      inputVersion: `${version.versionNumber}|${body.preset}|${record.strategy}`,
+      inputVersion: `${version.versionNumber}|${body.preset}|${record.strategy}|${record.id}`,
       payload: { exportId: record.id, storageKey },
     });
     logger.info({ event: "export_started", userId: user.id, videoId: video.id, exportId: record.id }, "export_started");
