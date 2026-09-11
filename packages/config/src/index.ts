@@ -22,6 +22,10 @@ function integer(name: string, fallback: number): number {
 export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig() {
+  const transcriptionProvider = optional("TRANSCRIPTION_PROVIDER", "openai");
+  const transcriptionApiKey = optional("TRANSCRIPTION_API_KEY", optional("OPENAI_API_KEY"));
+  const inheritedOpenAiKey = transcriptionProvider === "openai" ? transcriptionApiKey : "";
+  const aiApiKey = optional("AI_API_KEY", optional("OPENAI_API_KEY", inheritedOpenAiKey));
   return {
     nodeEnv: optional("NODE_ENV", "development"),
     serviceName: optional("SERVICE_NAME", "web"),
@@ -48,11 +52,11 @@ export function loadConfig() {
       password: optional("UPSTASH_REDIS_PASSWORD"),
       tls: optional("UPSTASH_REDIS_TLS", optional("REDIS_TLS", "false")) === "true",
     },
-    transcriptionProvider: optional("TRANSCRIPTION_PROVIDER", "openai"),
-    transcriptionApiKey: optional("TRANSCRIPTION_API_KEY", optional("OPENAI_API_KEY")),
+    transcriptionProvider,
+    transcriptionApiKey,
     fasterWhisperUrl: optional("FASTER_WHISPER_URL"),
-    aiProvider: optional("AI_PROVIDER", "heuristic"),
-    aiApiKey: optional("AI_API_KEY", optional("OPENAI_API_KEY")),
+    aiProvider: optional("AI_PROVIDER", aiApiKey ? "openai" : "heuristic"),
+    aiApiKey,
     ffmpegPath: optional("FFMPEG_PATH", "ffmpeg"),
     ffprobePath: optional("FFPROBE_PATH", "ffprobe"),
     workerConcurrency: integer("WORKER_CONCURRENCY", 1),

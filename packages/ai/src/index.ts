@@ -20,6 +20,15 @@ export interface TakeJudge {
   judge(group: TakeCandidateGroup): Promise<TakeDecision>;
 }
 
+const DEFAULT_AI_MODEL = "gpt-5.4-mini";
+const DEFAULT_REASONING_EFFORT = "high";
+
+function reasoningOptions(model: string) {
+  return /^gpt-[56](?:\.|-|$)/.test(model)
+    ? { reasoning_effort: process.env.AI_REASONING_EFFORT ?? DEFAULT_REASONING_EFFORT }
+    : {};
+}
+
 export function createHeuristicTakeJudge(): TakeJudge {
   return {
     async judge(group) {
@@ -40,7 +49,8 @@ export function createOpenAiTakeJudge(apiKey = loadConfig().aiApiKey): TakeJudge
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: process.env.AI_MODEL ?? "gpt-4.1-mini",
+          model: process.env.AI_MODEL ?? DEFAULT_AI_MODEL,
+          ...reasoningOptions(process.env.AI_MODEL ?? DEFAULT_AI_MODEL),
           response_format: { type: "json_object" },
           messages: [
             {
@@ -100,7 +110,7 @@ Never emit timestamps. Indices are inclusive ordinals from the original script. 
 
 async function completeJson(apiKey: string, system: string, user: string): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
+  const timer = setTimeout(() => controller.abort(), 120_000);
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -110,7 +120,8 @@ async function completeJson(apiKey: string, system: string, user: string): Promi
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: process.env.AI_MODEL ?? "gpt-4.1-mini",
+        model: process.env.AI_MODEL ?? DEFAULT_AI_MODEL,
+        ...reasoningOptions(process.env.AI_MODEL ?? DEFAULT_AI_MODEL),
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
@@ -146,7 +157,7 @@ export async function runScriptPass(transcript: TranscriptSegment[] | Word[]): P
       ? (transcript as TranscriptSegment[])
       : [{ startMs: 0, endMs: 0, text: "", words: transcript as Word[] }],
   );
-  const model = process.env.AI_MODEL ?? "gpt-4.1-mini";
+  const model = process.env.AI_MODEL ?? DEFAULT_AI_MODEL;
   const apiKey = loadConfig().aiApiKey;
   if (words.length === 0) {
     return { decisions: [], model, promptVersion: SCRIPT_PASS_PROMPT_VERSION, status: "success" };
@@ -157,7 +168,7 @@ export async function runScriptPass(transcript: TranscriptSegment[] | Word[]): P
       model,
       promptVersion: SCRIPT_PASS_PROMPT_VERSION,
       status: "disabled",
-      error: "AI_API_KEY or OPENAI_API_KEY is not configured",
+      error: "AI_API_KEY, OPENAI_API_KEY, or TRANSCRIPTION_API_KEY is not configured",
     };
   }
   try {

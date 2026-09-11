@@ -82,7 +82,7 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
     const retakes = retakeRemovals(groups, decisions);
     const fillers = fillerRemovals(timedRows, video.removeFillers);
 
-    const model = process.env.AI_MODEL ?? "gpt-4.1-mini";
+    const model = process.env.AI_MODEL ?? "gpt-5.4-mini";
     const cacheKey = scriptPassCacheKey({
       words,
       promptVersion: SCRIPT_PASS_PROMPT_VERSION,
