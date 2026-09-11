@@ -1,7 +1,7 @@
 import { mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { AppError, PACING_SETTINGS, analysisProgress, type PacingPreset } from "@raw-edit/core";
+import { AppError, PACING_SETTINGS, analysisProgress, waveformPeaksFromPcm16Wav, type PacingPreset } from "@raw-edit/core";
 import { usageRecords, userProfiles, videos } from "@raw-edit/db";
 import { objectKeys } from "@raw-edit/storage";
 import type { QueueJobPayload } from "@raw-edit/queue";
@@ -51,7 +51,15 @@ export async function processAnalyzeVideo(payload: QueueJobPayload) {
     const keys = objectKeys(payload.userId, video.id);
     const audioPath = join(workDir, "transcription.wav");
     await timed("audio", () => media.extractTranscriptionAudio(sourcePath, audioPath));
-    await storage.putObject(keys.audio, await readFile(audioPath), "audio/wav");
+    const audioBytes = await readFile(audioPath);
+    await Promise.all([
+      storage.putObject(keys.audio, audioBytes, "audio/wav"),
+      storage.putObject(
+        keys.waveform,
+        new TextEncoder().encode(JSON.stringify(waveformPeaksFromPcm16Wav(audioBytes))),
+        "application/json",
+      ),
+    ]);
 
     const [current] = await db.select({ status: videos.status }).from(videos).where(eq(videos.id, video.id)).limit(1);
     if (current?.status === "ANALYZING" || current?.status === "UPLOADED") {

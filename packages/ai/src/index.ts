@@ -81,14 +81,20 @@ export function getTakeJudge(provider = loadConfig().aiProvider): TakeJudge {
 }
 
 const CLEANUP_PROMPT = `You edit a talking-head transcript addressed by word index.
+The outcome is a coherent first-to-last delivery with abandoned attempts removed.
 Return JSON {"decisions":[{"fromWord":0,"toWord":0,"category":"falseStart","reason":"...","confidence":0.9}]}
 Categories: retake | falseStart | filler | tangent.
 Mark fillers, false starts, stumbles, and verbal delete markers ("sorry", "cut that", "again").
+Retakes are often adjacent repeated openings and may differ by one inserted, deleted, or corrected word.
+For a restart, remove each earlier abandoned attempt through the word immediately before the next attempt; keep the final complete continuation.
+Do not remove a unique introduction merely because a later sentence discusses the same topic.
 Never emit timestamps. Indices are inclusive ordinals from the script. Every decision needs a reason.`;
 
 const STRUCTURE_PROMPT = `You edit a talking-head transcript addressed by word index.
 Lines marked [CUT] were already removed. Do not recut them.
 Find duplicate coverage — the same point delivered twice — and remove the worse delivery.
+Treat adjacent near-duplicate phrases as separate takes even when punctuation is missing or one take inserts a correction.
+Prefer the take that continues coherently into the unrepeated material; delete the complete earlier take, not a fragment of the kept take.
 Keep deliberate callbacks. Return JSON {"decisions":[{"fromWord":0,"toWord":3,"category":"retake","reason":"...","confidence":0.9}]}
 Never emit timestamps. Indices are inclusive ordinals from the original script. Every decision needs a reason.`;
 
@@ -130,6 +136,8 @@ export type ScriptPassRun = {
   decisions: Partial<ScriptPassDecision>[];
   model: string;
   promptVersion: string;
+  status: "success" | "disabled" | "failed";
+  error?: string;
 };
 
 export async function runScriptPass(transcript: TranscriptSegment[] | Word[]): Promise<ScriptPassRun> {
@@ -140,7 +148,18 @@ export async function runScriptPass(transcript: TranscriptSegment[] | Word[]): P
   );
   const model = process.env.AI_MODEL ?? "gpt-4.1-mini";
   const apiKey = loadConfig().aiApiKey;
-  if (!apiKey || words.length === 0) return { decisions: [], model, promptVersion: SCRIPT_PASS_PROMPT_VERSION };
+  if (words.length === 0) {
+    return { decisions: [], model, promptVersion: SCRIPT_PASS_PROMPT_VERSION, status: "success" };
+  }
+  if (!apiKey) {
+    return {
+      decisions: [],
+      model,
+      promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+      status: "disabled",
+      error: "AI_API_KEY or OPENAI_API_KEY is not configured",
+    };
+  }
   try {
     const cleanup: Partial<ScriptPassDecision>[] = [];
     for (const chunk of chunkWordRanges(words.length)) {
@@ -161,9 +180,16 @@ export async function runScriptPass(transcript: TranscriptSegment[] | Word[]): P
       decisions: [...cleanup, ...parseDecisionList(structure)],
       model,
       promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+      status: "success",
     };
-  } catch {
-    return { decisions: [], model, promptVersion: SCRIPT_PASS_PROMPT_VERSION };
+  } catch (error) {
+    return {
+      decisions: [],
+      model,
+      promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+      status: "failed",
+      error: error instanceof Error ? error.message : "Unknown script-pass failure",
+    };
   }
 }
 

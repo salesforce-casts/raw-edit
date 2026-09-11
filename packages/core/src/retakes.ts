@@ -19,8 +19,10 @@ import {
   countInternalPauses,
   diceBigram,
   endsLikeSentence,
+  fuzzyPrefixSimilarity,
   isFuzzyPrefix,
   longestCommonPrefix,
+  tokenEditSimilarity,
   tokenize,
 } from "./text";
 
@@ -29,6 +31,7 @@ export type PairScore = {
   dice: number;
   containment: number;
   isPrefixOf: boolean;
+  sequenceSimilarity: number;
   combined: number;
 };
 
@@ -45,10 +48,18 @@ export function scoreTokenPair(left: string[], right: string[]): PairScore {
   const openingScore = shorter.length === 0 ? 0 : lcp / shorter.length;
   const dice = diceBigram(left, right);
   const contained = containment(shorter, longer);
-  const prefix = isFuzzyPrefix(shorter, longer) && shorter.length >= RETAKE_MIN_WORDS;
-  let combined = 0.5 * openingScore + 0.25 * dice + 0.25 * contained;
+  const prefixSimilarity = fuzzyPrefixSimilarity(shorter, longer);
+  const prefix =
+    shorter.length >= RETAKE_MIN_WORDS &&
+    (isFuzzyPrefix(shorter, longer) || prefixSimilarity >= 0.82);
+  const sequenceSimilarity = tokenEditSimilarity(left, right);
+  let combined = Math.max(
+    0.5 * openingScore + 0.25 * dice + 0.25 * contained,
+    0.5 * prefixSimilarity + 0.25 * dice + 0.25 * contained,
+    0.55 * sequenceSimilarity + 0.2 * dice + 0.25 * contained,
+  );
   if (prefix) combined = Math.max(combined, RETAKE_PREFIX_FLOOR);
-  return { openingScore, dice, containment: contained, isPrefixOf: prefix, combined };
+  return { openingScore, dice, containment: contained, isPrefixOf: prefix, sequenceSimilarity, combined };
 }
 
 export function scorePair(a: string, b: string): PairScore {
@@ -83,8 +94,8 @@ export function keeperScore(segment: TranscriptSegment, group: TranscriptSegment
   return (
     completenessDelta(segment, group) +
     1.2 * contentShare(segment, group) -
-    fluencyPenalty(segment) +
-    0.15 * index
+    fluencyPenalty(segment) -
+    0.05 * index
   );
 }
 
@@ -95,6 +106,127 @@ export function completenessScore(segment: TranscriptSegment, group: TranscriptS
 
 export function fluencyScore(segment: TranscriptSegment): number {
   return Math.max(0, 1 - fluencyPenalty(segment) / 3);
+}
+
+const RETAKE_UTTERANCE_GAP_MS = 800;
+const RETAKE_UTTERANCE_MAX_WORDS = 55;
+const RETAKE_RESTART_WINDOW_WORDS = 7;
+const RETAKE_RESTART_SCAN_WORDS = RETAKE_RESTART_WINDOW_WORDS + 2;
+const RETAKE_RESTART_ANCHOR_WORDS = 3;
+const RETAKE_RESTART_SIMILARITY = 0.7;
+const RETAKE_RESTART_MIN_GAP_MS = 1_200;
+const RETAKE_RESTART_MAX_GAP_MS = 90_000;
+const RETAKE_RESTART_PAUSE_MS = 400;
+
+type OpeningOccurrence = {
+  index: number;
+  startMs: number;
+  tokens: string[];
+};
+
+function transcriptSegmentFromWords(words: TranscriptSegment["words"]): TranscriptSegment {
+  return {
+    startMs: words[0].startMs,
+    endMs: words[words.length - 1].endMs,
+    text: words.map((word) => word.text).join(" ").trim(),
+    words,
+    confidence:
+      words.some((word) => word.confidence != null)
+        ? words.reduce((sum, word) => sum + (word.confidence ?? 1), 0) / words.length
+        : undefined,
+  };
+}
+
+function repeatedOpeningBoundaries(words: TranscriptSegment["words"]): Set<number> {
+  const occurrencesByAnchor = new Map<string, OpeningOccurrence[]>();
+  const boundaries = new Set<number>();
+  let lastRestartCurrent = -RETAKE_RESTART_WINDOW_WORDS;
+  for (let index = 0; index + RETAKE_RESTART_WINDOW_WORDS <= words.length; index += 1) {
+    const previousWord = words[index - 1];
+    const startsAfterBreak =
+      !previousWord ||
+      /[,.!?;:…]$/.test(previousWord.text.trim()) ||
+      words[index].startMs - previousWord.endMs >= RETAKE_RESTART_PAUSE_MS;
+    if (!startsAfterBreak) continue;
+    const opening = contentTokens(
+      words
+        .slice(index, index + RETAKE_RESTART_SCAN_WORDS)
+        .map((word) => word.text)
+        .join(" "),
+    ).slice(0, RETAKE_RESTART_WINDOW_WORDS);
+    if (opening.length < RETAKE_RESTART_WINDOW_WORDS) continue;
+    const anchor = opening.slice(0, RETAKE_RESTART_ANCHOR_WORDS).join(" ");
+    const occurrences = occurrencesByAnchor.get(anchor) ?? [];
+    const previous = [...occurrences].reverse().find((occurrence) => {
+      const elapsed = words[index].startMs - occurrence.startMs;
+      return (
+        elapsed >= RETAKE_RESTART_MIN_GAP_MS &&
+        elapsed <= RETAKE_RESTART_MAX_GAP_MS &&
+        tokenEditSimilarity(occurrence.tokens, opening) >= RETAKE_RESTART_SIMILARITY
+      );
+    });
+    occurrences.push({ index, startMs: words[index].startMs, tokens: opening });
+    occurrencesByAnchor.set(
+      anchor,
+      occurrences.filter(
+        (occurrence) => words[index].startMs - occurrence.startMs <= RETAKE_RESTART_MAX_GAP_MS,
+      ),
+    );
+    if (!previous) continue;
+    if (index - lastRestartCurrent < RETAKE_RESTART_WINDOW_WORDS) continue;
+    boundaries.add(previous.index);
+    boundaries.add(index);
+    lastRestartCurrent = index;
+  }
+  return boundaries;
+}
+
+/** Rebuild take-sized utterances from words rather than trusting provider segment boundaries. */
+export function deriveRetakeUtterances(segments: TranscriptSegment[]): TranscriptSegment[] {
+  const orderedSegments = [...segments].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const words = orderedSegments
+    .flatMap((segment) => segment.words ?? [])
+    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  if (words.length === 0) return orderedSegments;
+  const restartBoundaries = repeatedOpeningBoundaries(words);
+
+  const utterances: TranscriptSegment[] = [];
+  let current: TranscriptSegment["words"] = [];
+  const flush = () => {
+    if (current.length > 0) utterances.push(transcriptSegmentFromWords(current));
+    current = [];
+  };
+
+  for (const [wordIndex, word] of words.entries()) {
+    const previous = current.at(-1);
+    if (
+      previous &&
+      (restartBoundaries.has(wordIndex) ||
+        word.startMs - previous.endMs >= RETAKE_UTTERANCE_GAP_MS ||
+        endsLikeSentence(previous.text) ||
+        current.length >= RETAKE_UTTERANCE_MAX_WORDS)
+    ) {
+      flush();
+    }
+    current.push(word);
+  }
+  flush();
+
+  const merged: TranscriptSegment[] = [];
+  for (const utterance of utterances) {
+    const previous = merged.at(-1);
+    if (
+      previous &&
+      contentTokens(utterance.text).length < RETAKE_MIN_WORDS &&
+      !endsLikeSentence(previous.text) &&
+      utterance.startMs - previous.endMs < RETAKE_UTTERANCE_GAP_MS
+    ) {
+      merged[merged.length - 1] = transcriptSegmentFromWords([...previous.words, ...utterance.words]);
+    } else {
+      merged.push(utterance);
+    }
+  }
+  return merged;
 }
 
 export function groupRetakeCandidates(
@@ -164,7 +296,7 @@ export function groupRetakeCandidates(
 export function heuristicJudge(group: TakeCandidateGroup): TakeDecision {
   const ranked = [...group.candidates].sort((a, b) => {
     if (Math.abs(b.keeperScore - a.keeperScore) > 0.0001) return b.keeperScore - a.keeperScore;
-    return b.startMs - a.startMs;
+    return a.startMs - b.startMs;
   });
   const keep = ranked[0];
   const remove = ranked.slice(1);

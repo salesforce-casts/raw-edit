@@ -52,7 +52,7 @@ export function loadConfig() {
     transcriptionApiKey: optional("TRANSCRIPTION_API_KEY", optional("OPENAI_API_KEY")),
     fasterWhisperUrl: optional("FASTER_WHISPER_URL"),
     aiProvider: optional("AI_PROVIDER", "heuristic"),
-    aiApiKey: optional("AI_API_KEY"),
+    aiApiKey: optional("AI_API_KEY", optional("OPENAI_API_KEY")),
     ffmpegPath: optional("FFMPEG_PATH", "ffmpeg"),
     ffprobePath: optional("FFPROBE_PATH", "ffprobe"),
     workerConcurrency: integer("WORKER_CONCURRENCY", 1),

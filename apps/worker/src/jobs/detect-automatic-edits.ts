@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   AppError,
   SCRIPT_PASS_PROMPT_VERSION,
@@ -6,6 +6,7 @@ import {
   applyScriptPassGuards,
   buildCoveringEdl,
   dualSignalSilenceRemovals,
+  deriveRetakeUtterances,
   fillerRemovals,
   flattenWords,
   groupRetakeCandidates,
@@ -59,18 +60,24 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
 
     const [transcript] = await db.select().from(transcripts).where(eq(transcripts.videoId, video.id)).limit(1);
     const rows = transcript
-      ? await db.select().from(transcriptSegments).where(eq(transcriptSegments.transcriptId, transcript.id))
+      ? await db
+          .select()
+          .from(transcriptSegments)
+          .where(eq(transcriptSegments.transcriptId, transcript.id))
+          .orderBy(asc(transcriptSegments.sequenceNumber))
       : [];
-    const timedRows = rows.map((row) => ({
-      startMs: row.startMs,
-      endMs: row.endMs,
-      text: row.text,
-      words: row.wordsJson ?? [],
-    }));
+    const timedRows = rows
+      .map((row) => ({
+        startMs: row.startMs,
+        endMs: row.endMs,
+        text: row.text,
+        words: [...(row.wordsJson ?? [])].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs),
+      }))
+      .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
     const words = flattenWords(timedRows);
     const pacing = isPacing(video.pacingPreset);
     const silenceCuts = dualSignalSilenceRemovals(acoustic, timedRows, video.durationMs ?? 0, pacing);
-    const groups = groupRetakeCandidates(timedRows);
+    const groups = groupRetakeCandidates(deriveRetakeUtterances(timedRows));
     const decisions = await Promise.all(groups.map((group) => takeJudge.judge(group)));
     const retakes = retakeRemovals(groups, decisions);
     const fillers = fillerRemovals(timedRows, video.removeFillers);
@@ -82,15 +89,28 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       model,
     });
     const previous = await db.select().from(editVersions).where(eq(editVersions.videoId, video.id));
-    const cached = previous.find((version) => version.scriptPassCacheKey === cacheKey);
+    const cached = previous.find(
+      (version) =>
+        version.scriptPassCacheKey === cacheKey &&
+        Array.isArray(version.scriptPassDecisions) &&
+        version.scriptPassDecisions.length > 0,
+    );
     let rawDecisions: Partial<ScriptPassDecision>[] = Array.isArray(cached?.scriptPassDecisions)
       ? (cached?.scriptPassDecisions as Partial<ScriptPassDecision>[])
       : [];
+    let scriptPassStatusWarning: string | undefined;
     if (!cached) {
       const ran = await timed("scriptPass", () => runScriptPass(timedRows));
       rawDecisions = ran.decisions;
+      if (ran.status !== "success") {
+        scriptPassStatusWarning =
+          ran.status === "disabled"
+            ? "AI script cleanup is disabled; deterministic take detection was used."
+            : `AI script cleanup failed; deterministic take detection was used. ${ran.error ?? ""}`.trim();
+      }
     }
     const guarded = applyScriptPassGuards(rawDecisions, words, video.durationMs ?? 0);
+    const scriptPassWarning = [scriptPassStatusWarning, guarded.warning].filter(Boolean).join(" ") || undefined;
     const snapTargets = {
       wordBoundaryMs: wordBoundaryMs(words),
       keyframeMs: video.keyframeMs ?? [],
@@ -145,7 +165,7 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
         isCurrent: true,
         promptVersion: SCRIPT_PASS_PROMPT_VERSION,
         scriptPassModel: model,
-        scriptPassCacheKey: cacheKey,
+        scriptPassCacheKey: rawDecisions.length > 0 ? cacheKey : null,
         scriptPassDecisions: rawDecisions,
       })
       .returning();
@@ -170,15 +190,15 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       .set({
         status: "READY_FOR_REVIEW",
         progress: 100,
-        progressMessage: guarded.warning ?? "Ready for review",
-        scriptPassWarning: guarded.warning ?? null,
+        progressMessage: scriptPassWarning ?? "Ready for review",
+        scriptPassWarning: scriptPassWarning ?? null,
         updatedAt: new Date(),
       })
       .where(eq(videos.id, video.id));
     await queue.publishProgress(video.id, {
       status: "READY_FOR_REVIEW",
       progress: 100,
-      scriptPassWarning: guarded.warning ?? null,
+      scriptPassWarning: scriptPassWarning ?? null,
     });
     await finishJob(payload.jobId, "SUCCEEDED", { stageDurations });
   } catch (error) {

@@ -12,6 +12,7 @@ import {
 } from "./types";
 import { flattenWords } from "./silence";
 import { sha256Hex } from "./sha256";
+import { mergeRanges } from "./ranges";
 
 export { SCRIPT_PASS_PROMPT_VERSION };
 
@@ -137,28 +138,46 @@ export function applyScriptPassGuards(
 
   const removalMs = (decision: ScriptPassDecision) =>
     Math.max(0, words[decision.toWord].endMs - words[decision.fromWord].startMs);
-  const totalRemoval = unique.reduce((sum, decision) => sum + removalMs(decision), 0);
-  const overBudget =
-    durationMs > 0 &&
-    (totalRemoval / durationMs > SCRIPT_PASS_BATCH_REMOVAL_BUDGET ||
-      unique.some((decision) => removalMs(decision) / durationMs > SCRIPT_PASS_SINGLE_REMOVAL_BUDGET));
-  if (overBudget) {
-    return {
-      applied: [],
-      unapplied: [],
-      rejected: unique.map((decision) => ({ decision, reason: "removal budget exceeded" })),
-      warning: "Script pass proposed removing too much; using the deterministic edit only.",
-    };
-  }
-
   const applied: EditSegment[] = [];
   const unapplied: EditSegment[] = [];
-  for (const decision of unique) {
-    const segment = mapDecisionToSegment(decision, words);
-    if (decision.confidence >= confidenceFloor) applied.push(segment);
-    else unapplied.push({ ...segment, action: "KEEP" });
+  const confident = unique
+    .filter((decision) => {
+      if (decision.confidence < confidenceFloor) {
+        unapplied.push({ ...mapDecisionToSegment(decision, words), action: "KEEP" });
+        return false;
+      }
+      if (durationMs > 0 && removalMs(decision) / durationMs > SCRIPT_PASS_SINGLE_REMOVAL_BUDGET) {
+        rejected.push({ decision, reason: "single removal budget exceeded" });
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.confidence - a.confidence || a.fromWord - b.fromWord);
+
+  const accepted: ScriptPassDecision[] = [];
+  for (const decision of confident) {
+    const trial = [...accepted, decision];
+    const unionMs = mergeRanges(
+      trial.map((item) => ({
+        startMs: words[item.fromWord].startMs,
+        endMs: words[item.toWord].endMs,
+      })),
+    ).reduce((sum, range) => sum + Math.max(0, range.endMs - range.startMs), 0);
+    if (durationMs > 0 && unionMs / durationMs > SCRIPT_PASS_BATCH_REMOVAL_BUDGET) {
+      rejected.push({ decision, reason: "batch removal budget exceeded" });
+      continue;
+    }
+    accepted.push(decision);
   }
-  return { applied, unapplied, rejected };
+  applied.push(...accepted.sort((a, b) => a.fromWord - b.fromWord).map((decision) => mapDecisionToSegment(decision, words)));
+  return {
+    applied,
+    unapplied,
+    rejected,
+    warning: rejected.some((item) => item.reason.includes("budget"))
+      ? "Some script cleanup proposals tried to remove too much and were left for review."
+      : undefined,
+  };
 }
 
 export function maskScriptForPassB(words: Word[], removed: ScriptPassDecision[]): string {

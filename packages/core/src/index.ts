@@ -17,3 +17,4 @@ export * from "./share-token";
 export * from "./upload";
 export * from "./progress";
 export * from "./ssrf";
+export * from "./waveform";

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { EditSegment, Word } from "@raw-edit/contracts";
+import { waveformPeaksFromPcm16Wav, type WaveformData } from "@raw-edit/core";
 import { originalDuration, proposedDuration, transcriptTextForRange } from "@raw-edit/video-core";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +26,7 @@ type VideoRow = {
   errorMessage?: string | null;
   scriptPassWarning?: string | null;
   proxyStorageKey?: string | null;
-  filmstripStorageKey?: string | null;
+  audioStorageKey?: string | null;
 };
 
 export function ReviewEditor({ videoId }: { videoId: string }) {
@@ -44,8 +45,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [resetting, setResetting] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
-  const [filmstripUrl, setFilmstripUrl] = useState<string>();
-  const filmstripUrlRef = useRef<string | undefined>(undefined);
+  const [waveform, setWaveform] = useState<WaveformData>();
+  const waveformRequestInFlightRef = useRef(false);
   const statusRef = useRef<string | undefined>(undefined);
 
   async function load() {
@@ -62,7 +63,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         setResetting(false);
       }
       setCompletedExportId(json.latestExport?.id);
-      if (json.video.filmstripStorageKey) void loadFilmstrip();
+      if (json.video.audioStorageKey) void loadWaveform();
     }
     if (editRes.ok) {
       const json = (await editRes.json()) as { segments: EditSegment[] };
@@ -115,16 +116,30 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     void loadProxy();
   }
 
-  async function loadFilmstrip() {
-    if (filmstripUrlRef.current) return;
-    const response = await fetch(`/api/videos/${videoId}/filmstrip-url`, { method: "POST" });
-    if (!response.ok) return;
-    const json = (await response.json()) as { url: string };
-    filmstripUrlRef.current = json.url;
-    setFilmstripUrl(json.url);
+  async function loadWaveform() {
+    if (waveform || waveformRequestInFlightRef.current) return;
+    waveformRequestInFlightRef.current = true;
+    try {
+      const response = await fetch(`/api/videos/${videoId}/waveform-url`, { method: "POST" });
+      if (!response.ok) return;
+      const source = (await response.json()) as { kind: "peaks" | "audio"; url: string };
+      const dataResponse = await fetch(source.url);
+      if (!dataResponse.ok) return;
+      const next =
+        source.kind === "peaks"
+          ? ((await dataResponse.json()) as WaveformData)
+          : waveformPeaksFromPcm16Wav(new Uint8Array(await dataResponse.arrayBuffer()));
+      if (Array.isArray(next.peaks) && next.peaks.length > 0) setWaveform(next);
+    } catch {
+      // Playback and editing remain available if waveform loading fails.
+    } finally {
+      waveformRequestInFlightRef.current = false;
+    }
   }
 
   useEffect(() => {
+    // Initial data loading is intentionally tied to the route identity.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     const events = new EventSource(`/api/videos/${videoId}/events`);
     events.onmessage = (event) => {
@@ -146,7 +161,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       events.close();
       window.clearInterval(timer);
     };
-  }, [videoId]);
+  }, [videoId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const original = video?.durationMs ?? originalDuration(segments);
   const proposed = proposedDuration(segments);
@@ -362,7 +377,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
             currentMs={currentMs}
             durationMs={original}
             segments={segments}
-            filmstripUrl={filmstripUrl}
+            waveform={waveform}
             sourceColor={sourceColor}
             onSeek={seekTo}
           />
@@ -433,18 +448,63 @@ function PlayerTimeline({
   currentMs,
   durationMs,
   segments,
-  filmstripUrl,
+  waveform,
   sourceColor,
   onSeek,
 }: {
   currentMs: number;
   durationMs: number;
   segments: EditSegment[];
-  filmstripUrl?: string;
+  waveform?: WaveformData;
   sourceColor: Record<string, string>;
   onSeek: (ms: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    const canvas = canvasRef.current;
+    if (!track || !canvas) return;
+
+    const draw = () => {
+      const rect = track.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      const ratio = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.fillStyle = "#25072f";
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = "#e879f9";
+      const peaks = waveform?.peaks ?? [];
+      if (peaks.length === 0) {
+        context.globalAlpha = 0.28;
+        context.fillRect(0, height / 2 - 1, width, 2);
+        context.globalAlpha = 1;
+        return;
+      }
+      const center = height / 2;
+      for (let x = 0; x < width; x += 1) {
+        const from = Math.floor((x / width) * peaks.length);
+        const to = Math.max(from + 1, Math.ceil(((x + 1) / width) * peaks.length));
+        let peak = 0;
+        for (let index = from; index < Math.min(to, peaks.length); index += 1) peak = Math.max(peak, peaks[index] ?? 0);
+        const amplitude = Math.max(1, Math.min(center - 2, peak * (center - 2)));
+        context.fillRect(x, center - amplitude, 1, amplitude * 2);
+      }
+    };
+
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [waveform]);
 
   function seekFromClientX(clientX: number) {
     const track = trackRef.current;
@@ -470,8 +530,7 @@ function PlayerTimeline({
         aria-valuemax={Math.round(durationMs)}
         aria-valuenow={Math.round(currentMs)}
         tabIndex={0}
-        className="relative h-16 cursor-pointer overflow-hidden rounded-lg bg-muted"
-        style={filmstripUrl ? { backgroundImage: `url(${filmstripUrl})`, backgroundSize: "100% 100%" } : undefined}
+        className="relative h-24 cursor-pointer overflow-hidden rounded-lg border border-fuchsia-400/20 bg-[#25072f]"
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           seekFromClientX(event.clientX);
@@ -484,14 +543,15 @@ function PlayerTimeline({
           if (event.key === "ArrowRight") onSeek(Math.min(durationMs, currentMs + 1000));
         }}
       >
+        <canvas ref={canvasRef} className="pointer-events-none absolute inset-0" aria-hidden="true" />
         {segments.map((segment, index) => {
           const left = durationMs ? (segment.startMs / durationMs) * 100 : 0;
           const width = durationMs ? ((segment.endMs - segment.startMs) / durationMs) * 100 : 0;
           return (
             <div
               key={`${segment.startMs}-bar-${index}`}
-              className={`absolute inset-y-0 ${
-                segment.action === "KEEP" ? "bg-emerald-500/35" : `${sourceColor[segment.source ?? "SYSTEM"]} opacity-80`
+              className={`pointer-events-none absolute inset-y-0 ${
+                segment.action === "KEEP" ? "border-b-2 border-emerald-400" : `${sourceColor[segment.source ?? "SYSTEM"]} opacity-60`
               }`}
               style={{ left: `${left}%`, width: `${Math.max(width, 0.4)}%` }}
             />

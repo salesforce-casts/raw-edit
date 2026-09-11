@@ -30,6 +30,7 @@ export function objectKeys(userId: string, videoId: string) {
     audio: `${root}/audio/transcription.wav`,
     thumb: `${root}/thumb/poster.jpg`,
     filmstrip: `${root}/thumb/filmstrip.jpg`,
+    waveform: `${root}/audio/waveform.v1.json`,
     export: (exportId: string) => `${root}/exports/${exportId}.mp4`,
     prefix: `${root}/`,
   };

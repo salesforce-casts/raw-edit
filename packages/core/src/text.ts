@@ -126,6 +126,35 @@ export function fuzzyTokenEqual(a: string, b: string): boolean {
   return a.length >= 3 && b.length >= 3 && levenshteinAtMostOne(a, b);
 }
 
+export function tokenEditSimilarity(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (fuzzyTokenEqual(a[i - 1], b[j - 1]) ? 0 : 1),
+      );
+    }
+    for (let j = 0; j < current.length; j += 1) previous[j] = current[j];
+  }
+  return Math.max(0, 1 - previous[b.length] / Math.max(a.length, b.length));
+}
+
+export function fuzzyPrefixSimilarity(shorter: string[], longer: string[], editSlack = 2): number {
+  if (shorter.length === 0 || longer.length === 0) return 0;
+  let best = 0;
+  const minimum = Math.max(1, shorter.length - editSlack);
+  const maximum = Math.min(longer.length, shorter.length + editSlack);
+  for (let length = minimum; length <= maximum; length += 1) {
+    best = Math.max(best, tokenEditSimilarity(shorter, longer.slice(0, length)));
+  }
+  return best;
+}
+
 export function longestCommonPrefix(a: string[], b: string[]): number {
   const limit = Math.min(a.length, b.length);
   let index = 0;
