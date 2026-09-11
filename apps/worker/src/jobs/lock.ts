@@ -40,10 +40,12 @@ export async function claimJob(jobId: string, idempotencyKey?: string) {
 
 export function startHeartbeat(jobId: string, intervalMs = 10_000) {
   const timer = setInterval(() => {
-    void getDb()
-      .update(processingJobs)
-      .set({ heartbeatAt: new Date(), updatedAt: new Date() })
-      .where(eq(processingJobs.id, jobId));
+    void (async () => {
+      await getDb()
+        .update(processingJobs)
+        .set({ heartbeatAt: new Date(), updatedAt: new Date() })
+        .where(eq(processingJobs.id, jobId));
+    })().catch(() => undefined);
   }, intervalMs);
   return () => clearInterval(timer);
 }
