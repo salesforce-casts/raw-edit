@@ -18,3 +18,5 @@ export * from "./upload";
 export * from "./progress";
 export * from "./ssrf";
 export * from "./waveform";
+export * from "./canonical-script";
+export * from "./srt";

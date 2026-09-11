@@ -1,13 +1,18 @@
 import { loadConfig } from "@raw-edit/config";
 import {
+  CANONICAL_SCRIPT_PROMPT_VERSION,
   SCRIPT_PASS_PROMPT_VERSION,
   applyScriptPassGuards,
+  buildCanonicalReviewScript,
+  buildSourceLinkedTranscript,
   chunkWordRanges,
   decisionFromIndex,
   flattenWords,
   heuristicJudge,
   maskScriptForPassB,
   needsAiArbitration,
+  type CanonicalScriptPlan,
+  type CanonicalSourceSpan,
   type PaymentProvider,
   type ScriptPassDecision,
   type TakeCandidateGroup,
@@ -108,6 +113,29 @@ Prefer the take that continues coherently into the unrepeated material; delete t
 Keep deliberate callbacks. Return JSON {"decisions":[{"fromWord":0,"toWord":3,"category":"retake","reason":"...","confidence":0.9}]}
 Never emit timestamps. Indices are inclusive ordinals from the original script. Every decision needs a reason.`;
 
+const CANONICAL_SELECTION_PROMPT = `You are the lead editor of a talking-head recording.
+You receive the complete transcript in chronological order. Every line has a stable source word ID and the exact word spoken.
+Build the coherent final narrative by selecting words that were actually spoken. Do not rewrite, paraphrase, invent, or reorder words.
+
+Return JSON exactly as {"keepSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"complete final delivery","confidence":0.95}],"summary":"..."}.
+Each keep span is inclusive and must reference a contiguous passage from one spoken take.
+Return spans in chronological source order and include every unique introduction, explanation, instruction, numbered step, and conclusion that belongs in the presentation.
+When several attempts express the same idea, keep the most complete and fluent occurrence, normally the final corrected take.
+Never assemble one sentence from fragments of different attempts when a complete occurrence exists.
+Keep transition words such as "first", "then", "because", and "for this" with the clause they introduce.
+If uncertain whether information is duplicated, keep it. It is safer to retain an extra take than to lose unique information.
+Do not select silence, production directions, explicit delete markers, or abandoned partial attempts when a complete replacement exists.`;
+
+const CANONICAL_VERIFIER_PROMPT = `You are the safety reviewer for a source-linked talking-head edit.
+Every line contains a source word ID, its proposed state (KEEP or CUT), and the exact spoken word.
+Return only CUT passages that must be restored to prevent lost information or an incoherent final narrative.
+
+Return JSON exactly as {"restoreSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"unique process step was omitted","confidence":0.95}]}.
+Restore complete contiguous source passages, not isolated words.
+Restore unique introductions, explanations, requirements, numbered steps, conclusions, and the completion of dangling transitions.
+If an omitted passage is merely an abandoned or inferior repetition of a complete KEEP passage, do not restore it.
+Do not rewrite, paraphrase, reorder, or emit timestamps. When uncertain, restore the passage.`;
+
 async function completeJson(apiKey: string, system: string, user: string): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000);
@@ -141,6 +169,79 @@ function parseDecisionList(payload: unknown): Partial<ScriptPassDecision>[] {
   if (!payload || typeof payload !== "object") return [];
   const decisions = (payload as { decisions?: unknown }).decisions;
   return Array.isArray(decisions) ? (decisions as Partial<ScriptPassDecision>[]) : [];
+}
+
+function parseCanonicalSpans(payload: unknown, key: "keepSpans" | "restoreSpans"): CanonicalSourceSpan[] {
+  if (!payload || typeof payload !== "object") return [];
+  const spans = (payload as Record<string, unknown>)[key];
+  if (!Array.isArray(spans)) return [];
+  return spans.filter((span): span is CanonicalSourceSpan => {
+    if (!span || typeof span !== "object") return false;
+    const candidate = span as Partial<CanonicalSourceSpan>;
+    return (
+      typeof candidate.fromWordId === "string" &&
+      typeof candidate.toWordId === "string" &&
+      typeof candidate.reason === "string" &&
+      typeof candidate.confidence === "number"
+    );
+  });
+}
+
+export type CanonicalScriptRun = {
+  plan: CanonicalScriptPlan;
+  model: string;
+  status: "success" | "disabled" | "failed";
+  error?: string;
+};
+
+export async function runCanonicalScriptPass(transcript: TranscriptSegment[] | Word[]): Promise<CanonicalScriptRun> {
+  const words = flattenWords(
+    Array.isArray(transcript) && transcript[0] && "words" in transcript[0]
+      ? (transcript as TranscriptSegment[])
+      : [{ startMs: 0, endMs: 0, text: "", words: transcript as Word[] }],
+  );
+  const model = process.env.AI_MODEL ?? DEFAULT_AI_MODEL;
+  const emptyPlan: CanonicalScriptPlan = {
+    version: CANONICAL_SCRIPT_PROMPT_VERSION,
+    keepSpans: [],
+    restoreSpans: [],
+  };
+  const apiKey = loadConfig().aiApiKey;
+  if (words.length === 0) return { plan: emptyPlan, model, status: "success" };
+  if (!apiKey) {
+    return {
+      plan: emptyPlan,
+      model,
+      status: "disabled",
+      error: "AI_API_KEY, OPENAI_API_KEY, or TRANSCRIPTION_API_KEY is not configured",
+    };
+  }
+  try {
+    const selection = await completeJson(apiKey, CANONICAL_SELECTION_PROMPT, buildSourceLinkedTranscript(words));
+    const keepSpans = parseCanonicalSpans(selection, "keepSpans");
+    if (keepSpans.length === 0) throw new Error("canonical selection returned no source spans");
+    const review = await completeJson(apiKey, CANONICAL_VERIFIER_PROMPT, buildCanonicalReviewScript(words, keepSpans));
+    return {
+      plan: {
+        version: CANONICAL_SCRIPT_PROMPT_VERSION,
+        keepSpans,
+        restoreSpans: parseCanonicalSpans(review, "restoreSpans"),
+        summary:
+          selection && typeof selection === "object" && typeof (selection as { summary?: unknown }).summary === "string"
+            ? (selection as { summary: string }).summary
+            : undefined,
+      },
+      model,
+      status: "success",
+    };
+  } catch (error) {
+    return {
+      plan: emptyPlan,
+      model,
+      status: "failed",
+      error: error instanceof Error ? error.message : "Unknown canonical-script failure",
+    };
+  }
 }
 
 export type ScriptPassRun = {

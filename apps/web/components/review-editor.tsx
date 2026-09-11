@@ -302,6 +302,14 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     link.remove();
   }
 
+  function downloadReviewSrt() {
+    const link = document.createElement("a");
+    link.href = `/api/videos/${videoId}/review.srt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
   function pollExport(exportId: string) {
     const timer = window.setInterval(async () => {
       const response = await fetch(`/api/exports/${exportId}`);
@@ -430,6 +438,9 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
             Download raw edit
           </Button>
         ) : null}
+        <Button variant="outline" onClick={downloadReviewSrt} disabled={!ready}>
+          Download review SRT
+        </Button>
         <Button variant="outline" onClick={undo} disabled={history.length === 0}>
           Undo
         </Button>

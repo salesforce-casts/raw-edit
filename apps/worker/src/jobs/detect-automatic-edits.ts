@@ -1,24 +1,22 @@
 import { asc, eq } from "drizzle-orm";
 import {
   AppError,
-  SCRIPT_PASS_PROMPT_VERSION,
+  CANONICAL_SCRIPT_PROMPT_VERSION,
   acousticMinSilenceSeconds,
-  applyScriptPassGuards,
   buildCoveringEdl,
+  compileCanonicalScript,
   dualSignalSilenceRemovals,
   deriveRetakeUtterances,
-  fillerRemovals,
   flattenWords,
   groupRetakeCandidates,
-  overlayUnappliedProposals,
-  retakeRemovals,
+  isCanonicalScriptPlan,
   scriptPassCacheKey,
   snapSegmentBounds,
   wordBoundaryMs,
   type PacingPreset,
-  type ScriptPassDecision,
+  type CanonicalScriptPlan,
 } from "@raw-edit/core";
-import { runScriptPass } from "@raw-edit/ai";
+import { runCanonicalScriptPass } from "@raw-edit/ai";
 import {
   detectedTakeGroups,
   detectedTakeSegments,
@@ -40,7 +38,7 @@ function isPacing(value: string | null | undefined): PacingPreset {
 export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
   const claimed = await claimJob(payload.jobId, payload.idempotencyKey);
   if (!claimed || claimed.alreadyDone) return;
-  const { config, db, storage, media, takeJudge, queue } = getWorkerContext();
+  const { config, db, storage, media, queue } = getWorkerContext();
   const stopHeartbeat = startHeartbeat(payload.jobId);
   const stageDurations: Record<string, number> = {};
   async function timed<T>(name: string, work: () => Promise<T>): Promise<T> {
@@ -78,56 +76,67 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
     const pacing = isPacing(video.pacingPreset);
     const silenceCuts = dualSignalSilenceRemovals(acoustic, timedRows, video.durationMs ?? 0, pacing);
     const groups = groupRetakeCandidates(deriveRetakeUtterances(timedRows));
-    const decisions = await Promise.all(groups.map((group) => takeJudge.judge(group)));
-    const retakes = retakeRemovals(groups, decisions);
-    const fillers = fillerRemovals(timedRows, video.removeFillers);
 
     const model = process.env.AI_MODEL ?? "gpt-5.4-mini";
     const cacheKey = scriptPassCacheKey({
       words,
-      promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+      promptVersion: CANONICAL_SCRIPT_PROMPT_VERSION,
       model,
     });
     const previous = await db.select().from(editVersions).where(eq(editVersions.videoId, video.id));
     const cached = previous.find(
       (version) =>
         version.scriptPassCacheKey === cacheKey &&
-        Array.isArray(version.scriptPassDecisions) &&
-        version.scriptPassDecisions.length > 0,
+        isCanonicalScriptPlan(version.scriptPassDecisions),
     );
-    let rawDecisions: Partial<ScriptPassDecision>[] = Array.isArray(cached?.scriptPassDecisions)
-      ? (cached?.scriptPassDecisions as Partial<ScriptPassDecision>[])
-      : [];
+    let canonicalPlan: CanonicalScriptPlan = isCanonicalScriptPlan(cached?.scriptPassDecisions)
+      ? cached.scriptPassDecisions
+      : {
+          version: CANONICAL_SCRIPT_PROMPT_VERSION,
+          keepSpans: [],
+          restoreSpans: [],
+        };
     let scriptPassStatusWarning: string | undefined;
     if (!cached) {
-      const ran = await timed("scriptPass", () => runScriptPass(timedRows));
-      rawDecisions = ran.decisions;
+      const ran = await timed("canonicalScript", () => runCanonicalScriptPass(timedRows));
+      canonicalPlan = ran.plan;
       if (ran.status !== "success") {
         scriptPassStatusWarning =
           ran.status === "disabled"
-            ? "AI script cleanup is disabled; deterministic take detection was used."
-            : `AI script cleanup failed; deterministic take detection was used. ${ran.error ?? ""}`.trim();
+            ? "Canonical script selection is disabled, so all speech was kept."
+            : `Canonical script selection failed, so all speech was kept. ${ran.error ?? ""}`.trim();
       }
     }
-    const guarded = applyScriptPassGuards(rawDecisions, words, video.durationMs ?? 0);
-    const scriptPassWarning = [scriptPassStatusWarning, guarded.warning].filter(Boolean).join(" ") || undefined;
+    const compiled = compileCanonicalScript(canonicalPlan, words, video.durationMs ?? 0, {
+      preRollMs: video.preRollMs,
+      postRollMs: video.postRollMs,
+    });
+    const scriptPassWarning = [scriptPassStatusWarning, compiled.warning].filter(Boolean).join(" ") || undefined;
     const snapTargets = {
       wordBoundaryMs: wordBoundaryMs(words),
       keyframeMs: video.keyframeMs ?? [],
       silentGaps: acoustic,
     };
-    const scriptCuts = guarded.applied.map((segment) => snapSegmentBounds(segment, snapTargets));
     const silenceSnapped = silenceCuts.map((segment) => snapSegmentBounds(segment, snapTargets));
 
     await db.delete(detectedTakeGroups).where(eq(detectedTakeGroups.videoId, video.id));
-    for (const [index, group] of groups.entries()) {
+    for (const group of groups) {
+      const selectedCandidate = [...group.candidates]
+        .map((candidate) => ({
+          candidate,
+          overlapMs: compiled.keptSourceRanges.reduce(
+            (sum, range) => sum + Math.max(0, Math.min(candidate.endMs, range.endMs) - Math.max(candidate.startMs, range.startMs)),
+            0,
+          ),
+        }))
+        .sort((left, right) => right.overlapMs - left.overlapMs)[0];
       const [saved] = await db
         .insert(detectedTakeGroups)
         .values({
           videoId: video.id,
           similarityScore: group.similarityScore,
-          confidence: decisions[index]?.confidence ?? group.confidence,
-          reason: decisions[index]?.reason,
+          confidence: group.confidence,
+          reason: canonicalPlan.summary ?? "Selected by the source-linked canonical script",
         })
         .returning();
       if (group.candidates.length > 0) {
@@ -140,18 +149,15 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
             completenessScore: candidate.completenessScore,
             fluencyScore: candidate.fluencyScore,
             semanticScore: candidate.semanticScore,
-            isSelected: candidate.id === decisions[index]?.keepCandidateId,
+            isSelected: selectedCandidate?.overlapMs > 0 && candidate.id === selectedCandidate.candidate.id,
           })),
         );
       }
     }
 
-    const covering = overlayUnappliedProposals(
-      buildCoveringEdl(
-        video.durationMs ?? 0,
-        [...retakes, ...silenceSnapped, ...fillers, ...scriptCuts].map((segment) => ({ ...segment, action: "REMOVE" as const })),
-      ),
-      guarded.unapplied,
+    const covering = buildCoveringEdl(
+      video.durationMs ?? 0,
+      [...silenceSnapped, ...compiled.removals].map((segment) => ({ ...segment, action: "REMOVE" as const })),
     );
     const existing = previous;
     const nextNumber = existing.reduce((max, version) => Math.max(max, version.versionNumber), 0) + 1;
@@ -163,10 +169,10 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
         versionNumber: nextNumber,
         createdBy: "system",
         isCurrent: true,
-        promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+        promptVersion: CANONICAL_SCRIPT_PROMPT_VERSION,
         scriptPassModel: model,
-        scriptPassCacheKey: rawDecisions.length > 0 ? cacheKey : null,
-        scriptPassDecisions: rawDecisions,
+        scriptPassCacheKey: canonicalPlan.keepSpans.length > 0 ? cacheKey : null,
+        scriptPassDecisions: canonicalPlan,
       })
       .returning();
     if (covering.length > 0) {
