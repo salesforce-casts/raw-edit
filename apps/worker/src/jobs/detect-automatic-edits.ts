@@ -1,12 +1,23 @@
 import { eq } from "drizzle-orm";
 import {
   AppError,
+  SCRIPT_PASS_PROMPT_VERSION,
+  acousticMinSilenceSeconds,
+  applyScriptPassGuards,
   buildCoveringEdl,
   dualSignalSilenceRemovals,
   fillerRemovals,
+  flattenWords,
   groupRetakeCandidates,
+  overlayUnappliedProposals,
   retakeRemovals,
+  scriptPassCacheKey,
+  snapSegmentBounds,
+  wordBoundaryMs,
+  type PacingPreset,
+  type ScriptPassDecision,
 } from "@raw-edit/core";
+import { runScriptPass } from "@raw-edit/ai";
 import {
   detectedTakeGroups,
   detectedTakeSegments,
@@ -21,37 +32,72 @@ import type { QueueJobPayload } from "@raw-edit/queue";
 import { getWorkerContext } from "../lib/context";
 import { claimJob, finishJob, startHeartbeat } from "./lock";
 
+function isPacing(value: string | null | undefined): PacingPreset {
+  return value === "tight" || value === "very_tight" ? value : "natural";
+}
+
 export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
   const claimed = await claimJob(payload.jobId, payload.idempotencyKey);
   if (!claimed || claimed.alreadyDone) return;
   const { config, db, storage, media, takeJudge, queue } = getWorkerContext();
   const stopHeartbeat = startHeartbeat(payload.jobId);
+  const stageDurations: Record<string, number> = {};
+  async function timed<T>(name: string, work: () => Promise<T>): Promise<T> {
+    const started = Date.now();
+    try {
+      return await work();
+    } finally {
+      stageDurations[name] = Date.now() - started;
+    }
+  }
   try {
     const [video] = await db.select().from(videos).where(eq(videos.id, payload.videoId)).limit(1);
     if (!video?.sourceStorageKey) throw new AppError("SOURCE_MISSING", "Original missing", 404, true);
     const analysisStorageKey = video.audioStorageKey ?? video.sourceStorageKey;
     const analysisUrl = await storage.signGet(analysisStorageKey, config.sourceUrlTtlSeconds);
-    const acoustic = await media.detectSilence(analysisUrl, video.silenceThresholdMs / 1000);
+    const acoustic = await timed("silence", () => media.detectSilence(analysisUrl, acousticMinSilenceSeconds()));
 
     const [transcript] = await db.select().from(transcripts).where(eq(transcripts.videoId, video.id)).limit(1);
     const rows = transcript
       ? await db.select().from(transcriptSegments).where(eq(transcriptSegments.transcriptId, transcript.id))
       : [];
-    const timed = rows.map((row) => ({
+    const timedRows = rows.map((row) => ({
       startMs: row.startMs,
       endMs: row.endMs,
       text: row.text,
       words: row.wordsJson ?? [],
     }));
-    const silenceCuts = dualSignalSilenceRemovals(acoustic, timed, video.durationMs ?? 0, {
-      minSilenceMs: video.silenceThresholdMs,
-      preRollMs: video.preRollMs,
-      postRollMs: video.postRollMs,
-    });
-    const groups = groupRetakeCandidates(timed);
+    const words = flattenWords(timedRows);
+    const pacing = isPacing(video.pacingPreset);
+    const silenceCuts = dualSignalSilenceRemovals(acoustic, timedRows, video.durationMs ?? 0, pacing);
+    const groups = groupRetakeCandidates(timedRows);
     const decisions = await Promise.all(groups.map((group) => takeJudge.judge(group)));
     const retakes = retakeRemovals(groups, decisions);
-    const fillers = fillerRemovals(timed, video.removeFillers);
+    const fillers = fillerRemovals(timedRows, video.removeFillers);
+
+    const model = process.env.AI_MODEL ?? "gpt-4.1-mini";
+    const cacheKey = scriptPassCacheKey({
+      words,
+      promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+      model,
+    });
+    const previous = await db.select().from(editVersions).where(eq(editVersions.videoId, video.id));
+    const cached = previous.find((version) => version.scriptPassCacheKey === cacheKey);
+    let rawDecisions: Partial<ScriptPassDecision>[] = Array.isArray(cached?.scriptPassDecisions)
+      ? (cached?.scriptPassDecisions as Partial<ScriptPassDecision>[])
+      : [];
+    if (!cached) {
+      const ran = await timed("scriptPass", () => runScriptPass(timedRows));
+      rawDecisions = ran.decisions;
+    }
+    const guarded = applyScriptPassGuards(rawDecisions, words, video.durationMs ?? 0);
+    const snapTargets = {
+      wordBoundaryMs: wordBoundaryMs(words),
+      keyframeMs: video.keyframeMs ?? [],
+      silentGaps: acoustic,
+    };
+    const scriptCuts = guarded.applied.map((segment) => snapSegmentBounds(segment, snapTargets));
+    const silenceSnapped = silenceCuts.map((segment) => snapSegmentBounds(segment, snapTargets));
 
     await db.delete(detectedTakeGroups).where(eq(detectedTakeGroups.videoId, video.id));
     for (const [index, group] of groups.entries()) {
@@ -80,16 +126,28 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       }
     }
 
-    const covering = buildCoveringEdl(
-      video.durationMs ?? 0,
-      [...retakes, ...silenceCuts, ...fillers].map((segment) => ({ ...segment, action: "REMOVE" as const })),
+    const covering = overlayUnappliedProposals(
+      buildCoveringEdl(
+        video.durationMs ?? 0,
+        [...retakes, ...silenceSnapped, ...fillers, ...scriptCuts].map((segment) => ({ ...segment, action: "REMOVE" as const })),
+      ),
+      guarded.unapplied,
     );
-    const existing = await db.select().from(editVersions).where(eq(editVersions.videoId, video.id));
+    const existing = previous;
     const nextNumber = existing.reduce((max, version) => Math.max(max, version.versionNumber), 0) + 1;
     await db.update(editVersions).set({ isCurrent: false }).where(eq(editVersions.videoId, video.id));
     const [version] = await db
       .insert(editVersions)
-      .values({ videoId: video.id, versionNumber: nextNumber, createdBy: "system", isCurrent: true })
+      .values({
+        videoId: video.id,
+        versionNumber: nextNumber,
+        createdBy: "system",
+        isCurrent: true,
+        promptVersion: SCRIPT_PASS_PROMPT_VERSION,
+        scriptPassModel: model,
+        scriptPassCacheKey: cacheKey,
+        scriptPassDecisions: rawDecisions,
+      })
       .returning();
     if (covering.length > 0) {
       await db.insert(editSegments).values(
@@ -112,12 +170,17 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       .set({
         status: "READY_FOR_REVIEW",
         progress: 100,
-        progressMessage: "Ready for review",
+        progressMessage: guarded.warning ?? "Ready for review",
+        scriptPassWarning: guarded.warning ?? null,
         updatedAt: new Date(),
       })
       .where(eq(videos.id, video.id));
-    await queue.publishProgress(video.id, { status: "READY_FOR_REVIEW", progress: 100 });
-    await finishJob(payload.jobId, "SUCCEEDED");
+    await queue.publishProgress(video.id, {
+      status: "READY_FOR_REVIEW",
+      progress: 100,
+      scriptPassWarning: guarded.warning ?? null,
+    });
+    await finishJob(payload.jobId, "SUCCEEDED", { stageDurations });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Detection failed";
     const code = error instanceof AppError ? error.code : "AI_ANALYSIS_FAILED";
@@ -130,6 +193,7 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       errorCode: code,
       errorMessage: message,
       errorClass: permanent ? "permanent" : "transient",
+      stageDurations,
     });
     throw error;
   } finally {

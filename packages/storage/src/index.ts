@@ -29,6 +29,7 @@ export function objectKeys(userId: string, videoId: string) {
     proxy: `${root}/proxy/720p.mp4`,
     audio: `${root}/audio/transcription.wav`,
     thumb: `${root}/thumb/poster.jpg`,
+    filmstrip: `${root}/thumb/filmstrip.jpg`,
     export: (exportId: string) => `${root}/exports/${exportId}.mp4`,
     prefix: `${root}/`,
   };

@@ -3,6 +3,7 @@ import { mergeRanges, overlaps, subtractRanges, type MsRange } from "./ranges";
 
 const SOURCE_PRIORITY: Record<NonNullable<EditSegment["source"]>, number> = {
   USER: 4,
+  AUTO_SCRIPT: 3,
   AUTO_RETAKE: 3,
   AUTO_SILENCE: 2,
   AUTO_FILLER: 1,
@@ -101,6 +102,37 @@ export function keepAllEdl(durationMs: number): EditSegment[] {
       confidence: 1,
     },
   ];
+}
+
+export function overlayUnappliedProposals(edl: EditSegment[], proposals: EditSegment[]): EditSegment[] {
+  if (proposals.length === 0) return edl;
+  let current = edl.map((segment) => ({ ...segment }));
+  for (const proposal of proposals) {
+    const next: EditSegment[] = [];
+    for (const segment of current) {
+      if (segment.action !== "KEEP" || !overlaps(segment, proposal)) {
+        next.push(segment);
+        continue;
+      }
+      if (segment.startMs < proposal.startMs) {
+        next.push({ ...segment, endMs: proposal.startMs });
+      }
+      next.push({
+        ...proposal,
+        startMs: Math.max(segment.startMs, proposal.startMs),
+        endMs: Math.min(segment.endMs, proposal.endMs),
+        action: "KEEP",
+        source: "AUTO_SCRIPT",
+        confidence: proposal.confidence,
+        reason: proposal.reason,
+      });
+      if (segment.endMs > proposal.endMs) {
+        next.push({ ...segment, startMs: proposal.endMs });
+      }
+    }
+    current = next.filter((segment) => segment.endMs - segment.startMs > 20);
+  }
+  return current.sort((a, b) => a.startMs - b.startMs);
 }
 
 export function coveringKeepRanges(segments: EditSegment[]): MsRange[] {

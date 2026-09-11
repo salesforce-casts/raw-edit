@@ -75,6 +75,8 @@ export async function processRenderExport(payload: QueueJobPayload) {
       strategy: record.strategy,
       filterScriptPath: filterPath,
       outputPath,
+      workDir,
+      keyframeMs: video.keyframeMs ?? [],
       onProgress: (outTimeMs) => {
         const progress = renderProgress(outTimeMs, expectedMs);
         void (async () => {

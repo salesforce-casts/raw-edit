@@ -63,6 +63,8 @@ export type RenderInput = {
   strategy: ExportStrategy;
   filterScriptPath: string;
   outputPath: string;
+  workDir?: string;
+  keyframeMs?: number[];
   onProgress?: (outTimeMs: number) => void;
 };
 
@@ -71,6 +73,11 @@ export interface VideoProcessor {
   extractPoster(sourceUrlOrPath: string, destPath: string): Promise<void>;
   extractProxy(sourceUrlOrPath: string, destPath: string): Promise<void>;
   extractTranscriptionAudio(sourceUrlOrPath: string, destPath: string): Promise<void>;
+  extractAnalysisVisuals(
+    sourceUrlOrPath: string,
+    dest: { posterPath: string; proxyPath: string; filmstripPath: string },
+  ): Promise<void>;
+  extractKeyframes(sourceUrlOrPath: string): Promise<number[]>;
   detectSilence(sourceUrlOrPath: string, minSilenceSeconds: number): Promise<SilenceRegion[]>;
   render(input: RenderInput): Promise<void>;
 }

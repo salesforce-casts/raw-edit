@@ -1,6 +1,6 @@
 import type { EditSegment, ExportPreset, ExportStrategy, FfprobeMetadata, HdrType } from "./types";
 import { SELECT_FILTER_SEGMENT_LIMIT } from "./types";
-import { keepRangesFromEdl } from "./ranges";
+import { keepRangesFromEdl, type MsRange } from "./ranges";
 
 export type RenderPlan = {
   filterScript: string;
@@ -12,7 +12,14 @@ export type RenderPlan = {
   fpsNum?: number;
   fpsDen?: number;
   notes: string[];
-  strategy: "filter_concat" | "filter_select";
+  strategy: "filter_concat" | "filter_select" | "smart_copy";
+  smartPieces?: SmartRenderPiece[];
+};
+
+export type SmartRenderPiece = {
+  startMs: number;
+  endMs: number;
+  mode: "copy" | "recode";
 };
 
 const PRESET_CRF: Record<ExportPreset, { crf: number; audioBitrate: string; capHeight?: number }> = {
@@ -44,6 +51,63 @@ export function colorTagArgs(metadata: FfprobeMetadata, hdr: boolean): string[] 
 function scaleFilter(metadata: FfprobeMetadata, capHeight?: number): string {
   if (!capHeight || !metadata.height || metadata.height <= capHeight) return "";
   return `scale=-2:${capHeight}`;
+}
+
+export function canSmartRender(input: {
+  preset: ExportPreset;
+  strategy: ExportStrategy;
+  metadata: FfprobeMetadata;
+}): boolean {
+  if (input.preset === "SOCIAL" || input.preset === "SMALLER_FILE") return false;
+  if (input.strategy === "COMPATIBLE_SDR" && input.metadata.hdrType !== "SDR") return false;
+  const codec = (input.metadata.videoCodec ?? "").toLowerCase();
+  if (input.preset === "HIGH_QUALITY") return codec.includes("264") || codec === "avc1";
+  if (input.preset === "HEVC_HIGH_QUALITY") return codec.includes("265") || codec.includes("hevc");
+  return false;
+}
+
+function onKeyframe(timeMs: number, keyframes: number[], toleranceMs = 40): boolean {
+  return keyframes.some((key) => Math.abs(key - timeMs) <= toleranceMs);
+}
+
+function nextKeyframe(timeMs: number, keyframes: number[]): number | undefined {
+  return keyframes.find((key) => key >= timeMs - 40);
+}
+
+function previousKeyframe(timeMs: number, keyframes: number[]): number | undefined {
+  return [...keyframes].reverse().find((key) => key <= timeMs + 40);
+}
+
+export function planSmartRenderPieces(keeps: MsRange[], keyframeMs: number[]): SmartRenderPiece[] {
+  const keys = [...keyframeMs].sort((a, b) => a - b);
+  const pieces: SmartRenderPiece[] = [];
+  for (const keep of keeps) {
+    const startOnKey = onKeyframe(keep.startMs, keys);
+    const endOnKey = onKeyframe(keep.endMs, keys);
+    if (startOnKey && endOnKey) {
+      pieces.push({ startMs: keep.startMs, endMs: keep.endMs, mode: "copy" });
+      continue;
+    }
+    const firstKey = nextKeyframe(keep.startMs, keys);
+    const lastKey = previousKeyframe(keep.endMs, keys);
+    if (!startOnKey && firstKey != null && firstKey > keep.startMs && firstKey < keep.endMs) {
+      pieces.push({ startMs: keep.startMs, endMs: firstKey, mode: "recode" });
+      if (lastKey != null && lastKey > firstKey) {
+        pieces.push({ startMs: firstKey, endMs: lastKey, mode: "copy" });
+        if (!endOnKey && lastKey < keep.endMs) pieces.push({ startMs: lastKey, endMs: keep.endMs, mode: "recode" });
+      } else if (firstKey < keep.endMs) {
+        pieces.push({ startMs: firstKey, endMs: keep.endMs, mode: endOnKey ? "copy" : "recode" });
+      }
+      continue;
+    }
+    if (startOnKey && lastKey != null && lastKey > keep.startMs && lastKey < keep.endMs) {
+      pieces.push({ startMs: keep.startMs, endMs: lastKey, mode: "copy" });
+      pieces.push({ startMs: lastKey, endMs: keep.endMs, mode: "recode" });
+      continue;
+    }
+    pieces.push({ startMs: keep.startMs, endMs: keep.endMs, mode: "recode" });
+  }
+  return pieces.filter((piece) => piece.endMs - piece.startMs > 20);
 }
 
 export function buildFilterScript(
@@ -101,19 +165,30 @@ export function buildRenderPlan(input: {
   filterScriptPath: string;
   outputPath: string;
   sourceUrlOrPath?: string;
+  keyframeMs?: number[];
 }): RenderPlan {
-  const keeps = keepRangesFromEdl(input.segments).length;
+  const keepRanges = keepRangesFromEdl(input.segments);
+  const keeps = keepRanges.length;
   const useSelect = keeps > SELECT_FILTER_SEGMENT_LIMIT;
   const notes: string[] = [
     "Final render reads the original master only.",
-    "A single encode is required for frame-accurate cuts between keyframes.",
   ];
+  const toneMapToSdr = input.strategy === "COMPATIBLE_SDR" && input.metadata.hdrType !== "SDR";
+  const smart =
+    !useSelect &&
+    !toneMapToSdr &&
+    (input.keyframeMs?.length ?? 0) > 0 &&
+    canSmartRender({ preset: input.preset, strategy: input.strategy, metadata: input.metadata });
+  if (smart) {
+    notes.push("Smart render stream-copies keyframe-aligned cuts and re-encodes only mid-GOP fragments.");
+  } else {
+    notes.push("A single encode is required for frame-accurate cuts between keyframes.");
+  }
   if (useSelect) {
     notes.push(
       `More than ${SELECT_FILTER_SEGMENT_LIMIT} KEEP ranges: using select/aselect fallback. Audio/video grids can drift; concat is preferred.`,
     );
   }
-  const toneMapToSdr = input.strategy === "COMPATIBLE_SDR" && input.metadata.hdrType !== "SDR";
   const preset = PRESET_CRF[input.preset];
   const scale = scaleFilter(input.metadata, preset.capHeight);
   if (preset.capHeight && input.metadata.height && input.metadata.height > preset.capHeight) {
@@ -192,7 +267,8 @@ export function buildRenderPlan(input: {
     fpsNum: input.metadata.fpsNum,
     fpsDen: input.metadata.fpsDen,
     notes,
-    strategy: useSelect ? "filter_select" : "filter_concat",
+    strategy: smart ? "smart_copy" : useSelect ? "filter_select" : "filter_concat",
+    smartPieces: smart ? planSmartRenderPieces(keepRanges, input.keyframeMs ?? []) : undefined,
   };
 }
 

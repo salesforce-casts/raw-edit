@@ -140,6 +140,20 @@ describe("ffmpeg render strategy", () => {
     expect(plan.notes.some((note) => note.includes("fallback"))).toBe(true);
   });
 
+  it("uses smart copy for keyframe-aligned HIGH_QUALITY h264", () => {
+    const plan = buildRenderPlan({
+      segments: [{ startMs: 0, endMs: 2000, action: "KEEP" }],
+      metadata: { durationMs: 2000, videoCodec: "h264", hdrType: "SDR" },
+      preset: "HIGH_QUALITY",
+      strategy: "COMPATIBLE_SDR",
+      filterScriptPath: "/tmp/filter.txt",
+      outputPath: "/tmp/out.mp4",
+      keyframeMs: [0, 2000],
+    });
+    expect(plan.strategy).toBe("smart_copy");
+    expect(plan.smartPieces).toEqual([{ startMs: 0, endMs: 2000, mode: "copy" }]);
+  });
+
   it("redacts signed URLs from stored ffmpeg arguments", () => {
     expect(redactSignedUrl("ffmpeg -i https://secret.example/file?X-Amz-Signature=abc")).toBe(
       "ffmpeg -i [signed-url]",

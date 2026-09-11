@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { getDb, videos } from "@raw-edit/db";
+import { getDb, userProfiles, videos } from "@raw-edit/db";
 import { AppError, PLAN_LIMITS } from "@raw-edit/contracts";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
@@ -37,6 +37,7 @@ export async function POST(request: Request) {
       throw new AppError("PLAN_LIMIT", "File exceeds the current plan upload limit", 403);
     }
     const db = getDb();
+    const [profile] = await db.select().from(userProfiles).where(eq(userProfiles.userId, user.id)).limit(1);
     const [video] = await db
       .insert(videos)
       .values({
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
         sizeBytes: body.sizeBytes,
         status: "CREATED",
         sourceType: "upload",
+        pacingPreset: profile?.pacingPreset ?? "natural",
       })
       .returning();
     logger.info({ event: "video_created", userId: user.id, videoId: video.id }, "video_created");

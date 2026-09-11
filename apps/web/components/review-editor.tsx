@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import type { EditSegment } from "@raw-edit/contracts";
-import { originalDuration, proposedDuration } from "@raw-edit/video-core";
+import type { EditSegment, Word } from "@raw-edit/contracts";
+import { originalDuration, proposedDuration, transcriptTextForRange } from "@raw-edit/video-core";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -23,6 +23,8 @@ type VideoRow = {
   width?: number | null;
   height?: number | null;
   errorMessage?: string | null;
+  scriptPassWarning?: string | null;
+  proxyStorageKey?: string | null;
 };
 
 export function ReviewEditor({ videoId }: { videoId: string }) {
@@ -37,11 +39,14 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const proxyRequestInFlightRef = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [completedExportId, setCompletedExportId] = useState<string>();
+  const [words, setWords] = useState<Word[]>([]);
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
   async function load() {
-    const [videoRes, editRes] = await Promise.all([
+    const [videoRes, editRes, transcriptRes] = await Promise.all([
       fetch(`/api/videos/${videoId}`),
       fetch(`/api/videos/${videoId}/edit`),
+      fetch(`/api/videos/${videoId}/transcript`),
     ]);
     if (videoRes.ok) {
       const json = (await videoRes.json()) as { video: VideoRow; latestExport?: { id: string } | null };
@@ -51,6 +56,11 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     if (editRes.ok) {
       const json = (await editRes.json()) as { segments: EditSegment[] };
       setSegments(json.segments);
+    }
+    if (transcriptRes.ok) {
+      const json = (await transcriptRes.json()) as { segments?: Array<{ wordsJson?: Word[]; words?: Word[] }> };
+      const next = (json.segments ?? []).flatMap((segment) => segment.wordsJson ?? segment.words ?? []);
+      setWords(next);
     }
   }
 
@@ -79,6 +89,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         if (json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE") {
           void load();
           void loadProxy();
+        } else {
+          void loadProxy();
         }
       } catch {
         /* ignore malformed progress */
@@ -91,8 +103,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           setVideo((current) => (current ? { ...current, ...json } : current));
           if (json.status === "READY_FOR_REVIEW" || json.status === "COMPLETE") {
             void load();
-            void loadProxy();
           }
+          void loadProxy();
         })
         .catch(() => undefined);
     }, 4000);
@@ -221,6 +233,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       AUTO_SILENCE: "bg-amber-500/30",
       AUTO_RETAKE: "bg-destructive/40",
       AUTO_FILLER: "bg-violet-500/30",
+      AUTO_SCRIPT: "bg-emerald-500/30",
       USER: "bg-sky-500/30",
       SYSTEM: "bg-muted",
     }),
@@ -248,6 +261,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           {video?.errorMessage ? <p className="mt-2 text-sm text-destructive">{video.errorMessage}</p> : null}
         </Card>
       ) : null}
+      {video?.scriptPassWarning ? <p className="text-sm text-amber-400">{video.scriptPassWarning}</p> : null}
       <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
         <Card className="overflow-hidden">
           {playbackUrl ? (
@@ -291,7 +305,12 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
                       {segment.action === "REMOVE" ? "Restore" : "Remove"}
                     </Button>
                   </div>
-                  <div className="mt-1">{segment.reason ?? segment.action}</div>
+                  <SegmentCopy
+                    segment={segment}
+                    words={words}
+                    expanded={Boolean(expanded[index])}
+                    onToggleExpand={() => setExpanded((current) => ({ ...current, [index]: !current[index] }))}
+                  />
                 </button>
               ))}
             </div>
@@ -319,6 +338,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           <span>Keep</span>
           <span>Silence</span>
           <span>Retake</span>
+          <span>Script</span>
           <span>Manual</span>
         </div>
       </Card>
@@ -348,6 +368,32 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           Reset automatic edits
         </Button>
       </div>
+    </div>
+  );
+}
+
+function SegmentCopy({
+  segment,
+  words,
+  expanded,
+  onToggleExpand,
+}: {
+  segment: EditSegment;
+  words: Word[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const primary = transcriptTextForRange(words, segment.startMs, segment.endMs) || "(silence)";
+  const long = primary.length > 140;
+  return (
+    <div className="mt-1 space-y-1">
+      <div className={expanded || !long ? "whitespace-pre-wrap" : "line-clamp-2"}>{primary}</div>
+      {segment.reason ? <div className="text-xs text-muted-foreground">{segment.reason}</div> : null}
+      {long ? (
+        <button type="button" className="text-xs underline" onClick={onToggleExpand}>
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -53,7 +53,13 @@ export function startHeartbeat(jobId: string, intervalMs = 10_000) {
 export async function finishJob(
   jobId: string,
   status: Extract<JobStatus, "SUCCEEDED" | "COMPLETED" | "FAILED" | "DEAD" | "DEAD_LETTER">,
-  extra: { errorCode?: string; errorMessage?: string; progress?: number; errorClass?: string } = {},
+  extra: {
+    errorCode?: string;
+    errorMessage?: string;
+    progress?: number;
+    errorClass?: string;
+    stageDurations?: Record<string, number>;
+  } = {},
 ) {
   const persisted =
     status === "COMPLETED" ? persistJobStatus("SUCCEEDED") : status === "DEAD_LETTER" ? persistJobStatus("DEAD") : persistJobStatus(status);
@@ -65,6 +71,7 @@ export async function finishJob(
       errorMessage: extra.errorMessage,
       errorClass: extra.errorClass,
       progress: extra.progress ?? (persisted === "SUCCEEDED" ? 100 : undefined),
+      stageDurations: extra.stageDurations,
       finishedAt: new Date(),
       lockedBy: null,
       lockedAt: null,

@@ -73,8 +73,14 @@ export type UploadType = (typeof UPLOAD_TYPES)[number];
 export const EDIT_ACTIONS = ["KEEP", "REMOVE"] as const;
 export type EditAction = (typeof EDIT_ACTIONS)[number];
 
-export const EDIT_SOURCES = ["AUTO_SILENCE", "AUTO_RETAKE", "AUTO_FILLER", "USER", "SYSTEM"] as const;
+export const EDIT_SOURCES = ["AUTO_SILENCE", "AUTO_RETAKE", "AUTO_FILLER", "AUTO_SCRIPT", "USER", "SYSTEM"] as const;
 export type EditSource = (typeof EDIT_SOURCES)[number];
+
+export const PACING_PRESETS = ["natural", "tight", "very_tight"] as const;
+export type PacingPreset = (typeof PACING_PRESETS)[number];
+
+export const SCRIPT_PASS_CATEGORIES = ["retake", "falseStart", "filler", "tangent"] as const;
+export type ScriptPassCategory = (typeof SCRIPT_PASS_CATEGORIES)[number];
 
 export const EXPORT_PRESETS = ["HIGH_QUALITY", "SOCIAL", "SMALLER_FILE", "HEVC_HIGH_QUALITY"] as const;
 export type ExportPreset = (typeof EXPORT_PRESETS)[number];
@@ -172,10 +178,20 @@ export const RETAKE_PREFIX_FLOOR = 0.93;
 export const RETAKE_AUTO_REMOVE_MIN_CONFIDENCE = 0.75;
 export const RETAKE_AI_MARGIN = 0.6;
 export const DEFAULT_SILENCE_THRESHOLD_DB = -35;
-export const DEFAULT_MIN_SILENCE_MS = 1000;
-export const DEFAULT_PRE_ROLL_MS = 150;
-export const DEFAULT_POST_ROLL_MS = 200;
+export const DEFAULT_MIN_SILENCE_MS = 400;
+export const DEFAULT_PRE_ROLL_MS = 80;
+export const DEFAULT_POST_ROLL_MS = 60;
+export const HEAD_TAIL_KEEP_MS = 120;
 export const INTERNAL_PAUSE_MS = 800;
+export const ACOUSTIC_MIN_SILENCE_MS = 80;
+export const KEYFRAME_SNAP_MS = 200;
+export const SCRIPT_PASS_CHUNK_WORDS = 1500;
+export const SCRIPT_PASS_CHUNK_OVERLAP_WORDS = 200;
+export const SCRIPT_PASS_BATCH_REMOVAL_BUDGET = 0.6;
+export const SCRIPT_PASS_SINGLE_REMOVAL_BUDGET = 0.3;
+export const SCRIPT_PASS_CONFIDENCE_FLOOR = 0.75;
+export const SCRIPT_PASS_PROMPT_VERSION = "script-pass.v1";
+export const DEFAULT_PACING_PRESET: PacingPreset = "natural";
 export const SILENCE_THRESHOLD_OPTIONS_MS = [500, 1000, 1500, 2000, 3000] as const;
 export const SHARE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXY";
 export const SHARE_SLUG_LENGTH = 12;
@@ -227,10 +243,19 @@ export type EditOverride = {
   reason?: string;
 };
 
+export type ScriptPassDecision = {
+  fromWord: number;
+  toWord: number;
+  category: ScriptPassCategory;
+  reason: string;
+  confidence: number;
+};
+
 export type EditDecisionList = {
   videoId: string;
   version: number;
   segments: EditSegment[];
+  promptVersion?: string;
 };
 
 export type TakeCandidate = {

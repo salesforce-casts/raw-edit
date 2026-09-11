@@ -4,6 +4,8 @@ export * from "./sha256";
 export * from "./text";
 export * from "./ranges";
 export * from "./silence";
+export * from "./script-pass";
+export * from "./snap";
 export * from "./retakes";
 export * from "./edl";
 export * from "./fillers";
