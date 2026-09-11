@@ -33,6 +33,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const [history, setHistory] = useState<EditSegment[][]>([]);
   const [future, setFuture] = useState<EditSegment[][]>([]);
   const [playbackUrl, setPlaybackUrl] = useState<string>();
+  const playbackUrlRef = useRef<string | undefined>(undefined);
+  const proxyRequestInFlightRef = useRef(false);
   const [exporting, setExporting] = useState(false);
 
   async function load() {
@@ -51,10 +53,17 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   }
 
   async function loadProxy() {
-    const response = await fetch(`/api/videos/${videoId}/proxy-url`, { method: "POST" });
-    if (response.ok) {
-      const json = (await response.json()) as { url: string };
-      setPlaybackUrl(json.url);
+    if (playbackUrlRef.current || proxyRequestInFlightRef.current) return;
+    proxyRequestInFlightRef.current = true;
+    try {
+      const response = await fetch(`/api/videos/${videoId}/proxy-url`, { method: "POST" });
+      if (response.ok) {
+        const json = (await response.json()) as { url: string };
+        playbackUrlRef.current = json.url;
+        setPlaybackUrl(json.url);
+      }
+    } finally {
+      proxyRequestInFlightRef.current = false;
     }
   }
 
