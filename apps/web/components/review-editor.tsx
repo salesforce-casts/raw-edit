@@ -36,6 +36,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const playbackUrlRef = useRef<string | undefined>(undefined);
   const proxyRequestInFlightRef = useRef(false);
   const [exporting, setExporting] = useState(false);
+  const [completedExportId, setCompletedExportId] = useState<string>();
 
   async function load() {
     const [videoRes, editRes] = await Promise.all([
@@ -43,8 +44,9 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       fetch(`/api/videos/${videoId}/edit`),
     ]);
     if (videoRes.ok) {
-      const json = (await videoRes.json()) as { video: VideoRow };
+      const json = (await videoRes.json()) as { video: VideoRow; latestExport?: { id: string } | null };
       setVideo(json.video);
+      setCompletedExportId(json.latestExport?.id);
     }
     if (editRes.ok) {
       const json = (await editRes.json()) as { segments: EditSegment[] };
@@ -177,6 +179,22 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
     pollExport(json.export.id);
   }
 
+  async function downloadExport(exportId: string) {
+    const download = await fetch(`/api/exports/${exportId}/download-url`, { method: "POST" });
+    if (!download.ok) {
+      toast.error("Could not create download link");
+      return;
+    }
+    const body = (await download.json()) as { url: string };
+    const link = document.createElement("a");
+    link.href = body.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
   function pollExport(exportId: string) {
     const timer = window.setInterval(async () => {
       const response = await fetch(`/api/exports/${exportId}`);
@@ -185,11 +203,8 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       if (json.export.status === "COMPLETE") {
         window.clearInterval(timer);
         setExporting(false);
-        const download = await fetch(`/api/exports/${exportId}/download-url`, { method: "POST" });
-        if (download.ok) {
-          const body = (await download.json()) as { url: string };
-          window.location.href = body.url;
-        }
+        setCompletedExportId(exportId);
+        await downloadExport(exportId);
         void load();
       }
       if (json.export.status === "FAILED") {
@@ -312,6 +327,11 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         <Button onClick={() => void startExport()} disabled={!ready || exporting}>
           Accept edits and render
         </Button>
+        {completedExportId ? (
+          <Button variant="outline" onClick={() => void downloadExport(completedExportId)}>
+            Download raw edit
+          </Button>
+        ) : null}
         <Button variant="outline" onClick={undo} disabled={history.length === 0}>
           Undo
         </Button>

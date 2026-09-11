@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getDb, videos } from "@raw-edit/db";
-import { eq } from "drizzle-orm";
+import { exports, getDb, videos } from "@raw-edit/db";
+import { and, desc, eq } from "drizzle-orm";
 import { jsonError } from "@/server/api";
 import { requireUser } from "@/server/session";
 import { requireOwnedVideo } from "@/server/owned-video";
@@ -12,7 +12,13 @@ export async function GET(_: Request, context: { params: Promise<{ videoId: stri
     const user = await requireUser();
     const { videoId } = await context.params;
     const video = await requireOwnedVideo(user.id, videoId);
-    return NextResponse.json({ video });
+    const [latestExport] = await getDb()
+      .select({ id: exports.id })
+      .from(exports)
+      .where(and(eq(exports.videoId, video.id), eq(exports.status, "COMPLETE")))
+      .orderBy(desc(exports.completedAt))
+      .limit(1);
+    return NextResponse.json({ video, latestExport: latestExport ?? null });
   } catch (error) {
     return jsonError(error);
   }
