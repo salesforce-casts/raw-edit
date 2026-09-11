@@ -87,6 +87,7 @@ describe("ffmpeg render strategy", () => {
     expect(plan.videoCodec).toBe("libx265");
     expect(plan.args).toContain("yuv420p10le");
     expect(plan.args).toContain("-color_primaries");
+    expect(plan.args[plan.args.indexOf("-preset") + 1]).toBe("veryfast");
     expect(plan.notes.some((note) => note.includes("10-bit HEVC"))).toBe(true);
   });
 

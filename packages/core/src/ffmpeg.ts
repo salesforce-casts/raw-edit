@@ -127,6 +127,7 @@ export function buildRenderPlan(input: {
   const preserveHdr = input.strategy === "PRESERVE_HDR" && input.metadata.hdrType !== "SDR";
   const useHevc = input.preset === "HEVC_HIGH_QUALITY" || preserveHdr;
   const videoCodec = useHevc ? "libx265" : "libx264";
+  const encodeSpeed = useHevc ? "veryfast" : "medium";
   const inputPath = input.sourceUrlOrPath ?? "INPUT_PLACEHOLDER";
   const args = [
     "-hide_banner",
@@ -145,7 +146,7 @@ export function buildRenderPlan(input: {
     "-c:v",
     videoCodec,
     "-preset",
-    "medium",
+    encodeSpeed,
     "-crf",
     String(preset.crf),
     "-c:a",

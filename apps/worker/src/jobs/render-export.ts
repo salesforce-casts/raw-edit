@@ -77,9 +77,13 @@ export async function processRenderExport(payload: QueueJobPayload) {
       outputPath,
       onProgress: (outTimeMs) => {
         const progress = renderProgress(outTimeMs, expectedMs);
-        void db.update(exports).set({ progress }).where(eq(exports.id, record.id));
-        void db.update(videos).set({ progress, updatedAt: new Date() }).where(eq(videos.id, video.id));
-        void queue.publishProgress(video.id, { status: "RENDERING", progress });
+        void (async () => {
+          await Promise.all([
+            db.update(exports).set({ progress }).where(eq(exports.id, record.id)),
+            db.update(videos).set({ progress, updatedAt: new Date() }).where(eq(videos.id, video.id)),
+            queue.publishProgress(video.id, { status: "RENDERING", progress }),
+          ]);
+        })().catch(() => undefined);
       },
     });
 
