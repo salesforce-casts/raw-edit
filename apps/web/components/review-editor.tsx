@@ -25,6 +25,7 @@ type VideoRow = {
   errorMessage?: string | null;
   scriptPassWarning?: string | null;
   proxyStorageKey?: string | null;
+  filmstripStorageKey?: string | null;
 };
 
 export function ReviewEditor({ videoId }: { videoId: string }) {
@@ -42,6 +43,9 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
   const [words, setWords] = useState<Word[]>([]);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [resetting, setResetting] = useState(false);
+  const [currentMs, setCurrentMs] = useState(0);
+  const [filmstripUrl, setFilmstripUrl] = useState<string>();
+  const filmstripUrlRef = useRef<string | undefined>(undefined);
   const statusRef = useRef<string | undefined>(undefined);
 
   async function load() {
@@ -58,6 +62,7 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         setResetting(false);
       }
       setCompletedExportId(json.latestExport?.id);
+      if (json.video.filmstripStorageKey) void loadFilmstrip();
     }
     if (editRes.ok) {
       const json = (await editRes.json()) as { segments: EditSegment[] };
@@ -108,6 +113,15 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
       return;
     }
     void loadProxy();
+  }
+
+  async function loadFilmstrip() {
+    if (filmstripUrlRef.current) return;
+    const response = await fetch(`/api/videos/${videoId}/filmstrip-url`, { method: "POST" });
+    if (!response.ok) return;
+    const json = (await response.json()) as { url: string };
+    filmstripUrlRef.current = json.url;
+    setFilmstripUrl(json.url);
   }
 
   useEffect(() => {
@@ -182,16 +196,21 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
 
   function seekTo(ms: number) {
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
+    setCurrentMs(ms);
   }
 
   function onTimeUpdate() {
     const el = videoRef.current;
     if (!el) return;
-    const currentMs = el.currentTime * 1000;
+    let ms = el.currentTime * 1000;
     const hit = segments.find(
-      (segment) => segment.action === "REMOVE" && currentMs >= segment.startMs && currentMs < segment.endMs,
+      (segment) => segment.action === "REMOVE" && ms >= segment.startMs && ms < segment.endMs,
     );
-    if (hit) el.currentTime = hit.endMs / 1000;
+    if (hit) {
+      el.currentTime = hit.endMs / 1000;
+      ms = hit.endMs;
+    }
+    setCurrentMs(ms);
   }
 
   async function resetAutomaticEdits() {
@@ -339,6 +358,14 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
               Preview appears after analysis
             </div>
           )}
+          <PlayerTimeline
+            currentMs={currentMs}
+            durationMs={original}
+            segments={segments}
+            filmstripUrl={filmstripUrl}
+            sourceColor={sourceColor}
+            onSeek={seekTo}
+          />
         </Card>
         <Card className="p-3">
           <div className="mb-2 text-sm font-medium">Transcript / takes</div>
@@ -378,31 +405,6 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
           </ScrollArea>
         </Card>
       </div>
-      <Card className="p-3">
-        <div className="mb-2 text-sm font-medium">Timeline</div>
-        <div className="relative h-16 overflow-hidden rounded-lg bg-muted">
-          {segments.map((segment, index) => {
-            const left = original ? (segment.startMs / original) * 100 : 0;
-            const width = original ? ((segment.endMs - segment.startMs) / original) * 100 : 0;
-            return (
-              <div
-                key={`${segment.startMs}-bar-${index}`}
-                className={`absolute top-2 h-8 rounded-sm ${
-                  segment.action === "KEEP" ? "bg-primary/70" : sourceColor[segment.source ?? "SYSTEM"]
-                }`}
-                style={{ left: `${left}%`, width: `${Math.max(width, 0.4)}%` }}
-              />
-            );
-          })}
-        </div>
-        <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          <span>Keep</span>
-          <span>Silence</span>
-          <span>Retake</span>
-          <span>Script</span>
-          <span>Manual</span>
-        </div>
-      </Card>
       <Separator />
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => void startExport()} disabled={!ready || exporting}>
@@ -424,6 +426,100 @@ export function ReviewEditor({ videoId }: { videoId: string }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+function PlayerTimeline({
+  currentMs,
+  durationMs,
+  segments,
+  filmstripUrl,
+  sourceColor,
+  onSeek,
+}: {
+  currentMs: number;
+  durationMs: number;
+  segments: EditSegment[];
+  filmstripUrl?: string;
+  sourceColor: Record<string, string>;
+  onSeek: (ms: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  function seekFromClientX(clientX: number) {
+    const track = trackRef.current;
+    if (!track || durationMs <= 0) return;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onSeek(ratio * durationMs);
+  }
+
+  return (
+    <div className="space-y-2 border-t bg-card p-3">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Timeline</span>
+        <span className="font-mono">
+          {formatMs(currentMs)} / {formatMs(durationMs)}
+        </span>
+      </div>
+      <div
+        ref={trackRef}
+        role="slider"
+        aria-label="Video timeline"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(durationMs)}
+        aria-valuenow={Math.round(currentMs)}
+        tabIndex={0}
+        className="relative h-16 cursor-pointer overflow-hidden rounded-lg bg-muted"
+        style={filmstripUrl ? { backgroundImage: `url(${filmstripUrl})`, backgroundSize: "100% 100%" } : undefined}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          seekFromClientX(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) seekFromClientX(event.clientX);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") onSeek(Math.max(0, currentMs - 1000));
+          if (event.key === "ArrowRight") onSeek(Math.min(durationMs, currentMs + 1000));
+        }}
+      >
+        {segments.map((segment, index) => {
+          const left = durationMs ? (segment.startMs / durationMs) * 100 : 0;
+          const width = durationMs ? ((segment.endMs - segment.startMs) / durationMs) * 100 : 0;
+          return (
+            <div
+              key={`${segment.startMs}-bar-${index}`}
+              className={`absolute inset-y-0 ${
+                segment.action === "KEEP" ? "bg-emerald-500/35" : `${sourceColor[segment.source ?? "SYSTEM"]} opacity-80`
+              }`}
+              style={{ left: `${left}%`, width: `${Math.max(width, 0.4)}%` }}
+            />
+          );
+        })}
+        <div
+          className="absolute top-0 z-10 h-full w-0.5 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.4)]"
+          style={{ left: `${durationMs ? Math.min(100, (currentMs / durationMs) * 100) : 0}%` }}
+        />
+      </div>
+      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+        <LegendDot className="bg-emerald-500" label="Keep" />
+        <LegendDot className="bg-amber-500" label="Silence" />
+        <LegendDot className="bg-destructive" label="Retake" />
+        <LegendDot className="bg-violet-500" label="Filler" />
+        <LegendDot className="bg-emerald-300" label="Script" />
+        <LegendDot className="bg-sky-500" label="Manual" />
+      </div>
+    </div>
+  );
+}
+
+function LegendDot({ className, label }: { className: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`h-2 w-2 rounded-full ${className}`} />
+      {label}
+    </span>
   );
 }
 
