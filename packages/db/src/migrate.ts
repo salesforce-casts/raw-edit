@@ -27,7 +27,7 @@ async function migrate() {
   const sql = postgres(url, { max: 1 });
   const drizzleDir = join(here, "..", "drizzle");
   const files = readdirSync(drizzleDir)
-    .filter((file) => file.endsWith(".sql"))
+    .filter((file) => file.endsWith(".sql") && !file.endsWith(".down.sql"))
     .sort();
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS raw_edit_migrations (

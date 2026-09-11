@@ -10,6 +10,7 @@
     "typecheck": "turbo typecheck",
     "db:generate": "pnpm --filter @raw-edit/db generate",
     "db:migrate": "pnpm --filter @raw-edit/db migrate",
+    "db:rollback": "pnpm --filter @raw-edit/db rollback",
     "db:seed": "pnpm --filter @raw-edit/db seed",
     "web": "pnpm --filter @raw-edit/web dev",
     "worker": "pnpm --filter @raw-edit/worker start"

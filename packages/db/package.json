@@ -10,6 +10,7 @@
   "scripts": {
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
+    "rollback": "tsx src/rollback.ts",
     "seed": "tsx src/seed.ts",
     "push": "drizzle-kit push"
   },
