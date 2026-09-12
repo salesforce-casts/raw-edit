@@ -34,6 +34,19 @@ export type CanonicalScriptAlignment = {
   error?: string;
 };
 
+type ContiguousClipCandidate = {
+  startSourceTokenIndex: number;
+  endSourceTokenIndex: number;
+  startWordIndex: number;
+  endWordIndex: number;
+};
+
+type ClipAlignmentState = ContiguousClipCandidate & {
+  skipped: number;
+  firstSourceTokenIndex: number;
+  previousStateIndex: number;
+};
+
 const WORD_ID = /^w_(\d+)$/;
 const UNIT_GAP_MS = 900;
 const UNIT_MAX_WORDS = 60;
@@ -51,6 +64,167 @@ function canonicalTokens(value: string): string[] {
     .split(/\s+/)
     .map(normalizedToken)
     .filter(Boolean);
+}
+
+function sourceTokenList(words: Word[]) {
+  return words
+    .map((word, wordIndex) => ({ token: normalizedToken(word.text), wordIndex }))
+    .filter((item) => item.token.length > 0);
+}
+
+function spansFromWordIndexes(sourceWordIndexes: number[]): CanonicalSourceSpan[] {
+  if (sourceWordIndexes.length === 0) return [];
+  const spans: CanonicalSourceSpan[] = [];
+  let spanStart = sourceWordIndexes[0];
+  let spanEnd = sourceWordIndexes[0];
+  const flush = () => {
+    spans.push({
+      fromWordId: sourceWordId(spanStart),
+      toWordId: sourceWordId(spanEnd),
+      reason: "Verbatim match to the verified cleaned script",
+      confidence: 1,
+    });
+  };
+  for (let index = 1; index < sourceWordIndexes.length; index += 1) {
+    const current = sourceWordIndexes[index];
+    if (current <= spanEnd + 1) {
+      spanEnd = Math.max(spanEnd, current);
+    } else {
+      flush();
+      spanStart = current;
+      spanEnd = current;
+    }
+  }
+  flush();
+  return spans;
+}
+
+function betterClipAlignment(left: ClipAlignmentState, right: ClipAlignmentState): boolean {
+  if (left.skipped !== right.skipped) return left.skipped < right.skipped;
+  const leftSpan = left.endSourceTokenIndex - left.firstSourceTokenIndex;
+  const rightSpan = right.endSourceTokenIndex - right.firstSourceTokenIndex;
+  if (leftSpan !== rightSpan) return leftSpan < rightSpan;
+  return left.endSourceTokenIndex > right.endSourceTokenIndex;
+}
+
+/**
+ * Maps an ordered list of verbatim source clips back to transcript words.
+ * Every clip must match one contiguous source passage, which prevents the
+ * aligner from assembling a sentence from pieces of different retakes.
+ */
+export function alignCanonicalClips(cleanedClips: string[], words: Word[]): CanonicalScriptAlignment {
+  const clips = cleanedClips.map(canonicalTokens).filter((clip) => clip.length > 0);
+  const sourceTokens = sourceTokenList(words);
+  const canonicalWordCount = clips.reduce((total, clip) => total + clip.length, 0);
+  if (clips.length === 0) {
+    return {
+      spans: [],
+      sourceWordIndexes: [],
+      canonicalWordCount: 0,
+      coverage: 0,
+      error: "cleaned clips were empty",
+    };
+  }
+
+  const candidatesByClip = clips.map((clip) => {
+    const candidates: ContiguousClipCandidate[] = [];
+    for (let start = 0; start + clip.length <= sourceTokens.length; start += 1) {
+      let matches = true;
+      for (let offset = 0; offset < clip.length; offset += 1) {
+        if (sourceTokens[start + offset].token !== clip[offset]) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) continue;
+      const end = start + clip.length - 1;
+      candidates.push({
+        startSourceTokenIndex: start,
+        endSourceTokenIndex: end,
+        startWordIndex: sourceTokens[start].wordIndex,
+        endWordIndex: sourceTokens[end].wordIndex,
+      });
+    }
+    return candidates;
+  });
+
+  const missingClip = candidatesByClip.findIndex((candidates) => candidates.length === 0);
+  if (missingClip >= 0) {
+    return {
+      spans: [],
+      sourceWordIndexes: [],
+      canonicalWordCount,
+      coverage: missingClip / clips.length,
+      error: `cleaned clip ${missingClip + 1} of ${clips.length} was not a contiguous source passage`,
+    };
+  }
+
+  const layers: ClipAlignmentState[][] = [];
+  for (let clipIndex = 0; clipIndex < candidatesByClip.length; clipIndex += 1) {
+    const states: ClipAlignmentState[] = [];
+    for (const candidate of candidatesByClip[clipIndex]) {
+      if (clipIndex === 0) {
+        states.push({
+          ...candidate,
+          skipped: 0,
+          firstSourceTokenIndex: candidate.startSourceTokenIndex,
+          previousStateIndex: -1,
+        });
+        continue;
+      }
+      let best: ClipAlignmentState | null = null;
+      let bestPreviousIndex = -1;
+      const previousLayer = layers[clipIndex - 1];
+      for (let previousIndex = 0; previousIndex < previousLayer.length; previousIndex += 1) {
+        const previous = previousLayer[previousIndex];
+        if (previous.endSourceTokenIndex >= candidate.startSourceTokenIndex) continue;
+        const next: ClipAlignmentState = {
+          ...candidate,
+          skipped: previous.skipped + candidate.startSourceTokenIndex - previous.endSourceTokenIndex - 1,
+          firstSourceTokenIndex: previous.firstSourceTokenIndex,
+          previousStateIndex: previousIndex,
+        };
+        if (!best || betterClipAlignment(next, best)) {
+          best = next;
+          bestPreviousIndex = previousIndex;
+        }
+      }
+      if (best) states.push({ ...best, previousStateIndex: bestPreviousIndex });
+    }
+    if (states.length === 0) {
+      return {
+        spans: [],
+        sourceWordIndexes: [],
+        canonicalWordCount,
+        coverage: clipIndex / clips.length,
+        error: `cleaned clips stopped matching chronologically at clip ${clipIndex + 1} of ${clips.length}`,
+      };
+    }
+    layers.push(states);
+  }
+
+  const lastLayer = layers.at(-1)!;
+  let stateIndex = 0;
+  for (let index = 1; index < lastLayer.length; index += 1) {
+    if (betterClipAlignment(lastLayer[index], lastLayer[stateIndex])) stateIndex = index;
+  }
+  const selected = Array<ClipAlignmentState>(layers.length);
+  for (let clipIndex = layers.length - 1; clipIndex >= 0; clipIndex -= 1) {
+    const state = layers[clipIndex][stateIndex];
+    selected[clipIndex] = state;
+    stateIndex = state.previousStateIndex;
+  }
+  const sourceWordIndexes = selected.flatMap((candidate) => {
+    const indexes: number[] = [];
+    for (let index = candidate.startWordIndex; index <= candidate.endWordIndex; index += 1) indexes.push(index);
+    return indexes;
+  });
+  return {
+    spans: spansFromWordIndexes(sourceWordIndexes),
+    sourceWordIndexes,
+    canonicalWordCount,
+    coverage: 1,
+  };
 }
 
 type AlignmentState = {
@@ -80,9 +254,7 @@ function betterAlignment(left: AlignmentState, right: AlignmentState): boolean {
  */
 export function alignCanonicalScript(cleanedScript: string, words: Word[]): CanonicalScriptAlignment {
   const targetTokens = canonicalTokens(cleanedScript);
-  const sourceTokens = words
-    .map((word, wordIndex) => ({ token: normalizedToken(word.text), wordIndex }))
-    .filter((item) => item.token.length > 0);
+  const sourceTokens = sourceTokenList(words);
   if (targetTokens.length === 0) {
     return {
       spans: [],
@@ -153,30 +325,8 @@ export function alignCanonicalScript(cleanedScript: string, words: Word[]): Cano
     finalStateIndex = state.previousStateIndex;
   }
   const sourceWordIndexes = matchedSourceTokenIndexes.map((index) => sourceTokens[index].wordIndex);
-  const spans: CanonicalSourceSpan[] = [];
-  let spanStart = sourceWordIndexes[0];
-  let spanEnd = sourceWordIndexes[0];
-  const flush = () => {
-    spans.push({
-      fromWordId: sourceWordId(spanStart),
-      toWordId: sourceWordId(spanEnd),
-      reason: "Verbatim match to the verified cleaned script",
-      confidence: 1,
-    });
-  };
-  for (let index = 1; index < sourceWordIndexes.length; index += 1) {
-    const current = sourceWordIndexes[index];
-    if (current <= spanEnd + 1) {
-      spanEnd = Math.max(spanEnd, current);
-    } else {
-      flush();
-      spanStart = current;
-      spanEnd = current;
-    }
-  }
-  flush();
   return {
-    spans,
+    spans: spansFromWordIndexes(sourceWordIndexes),
     sourceWordIndexes,
     canonicalWordCount: targetTokens.length,
     coverage: 1,

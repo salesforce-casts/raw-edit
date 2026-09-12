@@ -141,6 +141,7 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
           model: ran.model,
           keepSpanCount: canonicalPlan.keepSpans.length,
           restoreSpanCount: canonicalPlan.restoreSpans.length,
+          cleanedClipCount: canonicalPlan.cleanedClips?.length ?? 0,
           cleanedWordCount: canonicalPlan.cleanedScript?.trim().split(/\s+/).filter(Boolean).length ?? 0,
           alignmentCoverage: canonicalPlan.alignmentCoverage,
         }),

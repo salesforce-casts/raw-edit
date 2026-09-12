@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CANONICAL_SCRIPT_PROMPT_VERSION,
+  alignCanonicalClips,
   alignCanonicalScript,
   buildNarrativeUnits,
   compileCanonicalScript,
@@ -58,6 +59,35 @@ describe("source-linked canonical script", () => {
 
     expect(aligned.error).toBeUndefined();
     expect(aligned.sourceWordIndexes).toEqual(words.map((_, index) => index).slice(7));
+    expect(aligned.spans).toHaveLength(1);
+  });
+
+  it("never stitches one cleaned clip across two retakes", () => {
+    const words = timedWords(
+      "Then you need to upload the 3D. Then you need to upload the 3D design. Finally the machine deposits chocolate.",
+    );
+    const aligned = alignCanonicalClips(
+      ["Then you need to upload the 3D design.", "Finally the machine deposits chocolate."],
+      words,
+    );
+
+    expect(aligned.error).toBeUndefined();
+    expect(aligned.sourceWordIndexes).toEqual(words.map((_, index) => index).slice(7));
+    expect(aligned.spans).toHaveLength(1);
+  });
+
+  it("chooses a complete repeated clip occurrence that continues coherently", () => {
+    const words = timedWords(
+      "To start this business you need chocolate base. " +
+      "To start this business you need chocolate base and gold foil paper. The process is simple.",
+    );
+    const aligned = alignCanonicalClips(
+      ["To start this business you need chocolate base and gold foil paper.", "The process is simple."],
+      words,
+    );
+
+    expect(aligned.error).toBeUndefined();
+    expect(aligned.sourceWordIndexes[0]).toBe(8);
     expect(aligned.spans).toHaveLength(1);
   });
 
