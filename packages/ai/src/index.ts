@@ -115,26 +115,30 @@ Never emit timestamps. Indices are inclusive ordinals from the original script. 
 
 const CANONICAL_SELECTION_PROMPT = `You are the lead editor of a talking-head recording.
 You receive the complete transcript in chronological order. Every line has a stable source word ID and the exact word spoken.
-Build the coherent final narrative by selecting words that were actually spoken. Do not rewrite, paraphrase, invent, or reorder words.
+First determine the concise, coherent final script. Then source that script by selecting only words that were actually spoken. Do not rewrite, paraphrase, invent, or reorder words.
 
 Return JSON exactly as {"keepSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"complete final delivery","confidence":0.95}],"summary":"..."}.
-Each keep span is inclusive and must reference a contiguous passage from one spoken take.
+Each keep span is inclusive and must reference one exact contiguous source passage. The concatenated keep spans are the final edited transcript.
 Return spans in chronological source order and include every unique introduction, explanation, instruction, numbered step, and conclusion that belongs in the presentation.
 When several attempts express the same idea, keep the most complete and fluent occurrence, normally the final corrected take.
-Never assemble one sentence from fragments of different attempts when a complete occurrence exists.
+Remove repeated phrases, abandoned restarts, corrections, filler, and malformed partial statements even when they occur inside one long passage without punctuation.
+If an otherwise useful passage contains a repeated or wrong phrase, split it into multiple keep spans around that phrase. Jump cuts inside a spoken take are allowed and expected.
+Never return a keep span that contains two versions of the same phrase or an abandoned restart. Prefer short clause-level spans over one broad span; keep spans should normally be no longer than 35 words.
+Never stitch together incompatible sentence fragments. Read the concatenated selected words as one script and ensure it is grammatical and coherent.
 Keep transition words such as "first", "then", "because", and "for this" with the clause they introduce.
-If uncertain whether information is duplicated, keep it. It is safer to retain an extra take than to lose unique information.
+Preserve unique facts, steps, requirements, pricing, and the call to action. Do not target a duration; length must follow the unique content.
 Do not select silence, production directions, explicit delete markers, or abandoned partial attempts when a complete replacement exists.`;
 
-const CANONICAL_VERIFIER_PROMPT = `You are the safety reviewer for a source-linked talking-head edit.
+const CANONICAL_VERIFIER_PROMPT = `You are the final editor and safety reviewer for a source-linked talking-head edit.
 Every line contains a source word ID, its proposed state (KEEP or CUT), and the exact spoken word.
-Return only CUT passages that must be restored to prevent lost information or an incoherent final narrative.
+Audit the entire proposed edit, then return the complete corrected KEEP span list. Your output replaces the first editor's selection.
 
-Return JSON exactly as {"restoreSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"unique process step was omitted","confidence":0.95}]}.
-Restore complete contiguous source passages, not isolated words.
-Restore unique introductions, explanations, requirements, numbered steps, conclusions, and the completion of dangling transitions.
-If an omitted passage is merely an abandoned or inferior repetition of a complete KEEP passage, do not restore it.
-Do not rewrite, paraphrase, reorder, or emit timestamps. When uncertain, restore the passage.`;
+Return JSON exactly as {"keepSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"verified final delivery","confidence":0.95}]}.
+Read all KEEP words concatenated as the proposed final script. Remove any repeated phrase, duplicate idea, abandoned restart, filler, malformed partial statement, or word fragment that remains.
+Restore a CUT passage only when it contains a unique fact, step, requirement, conclusion, or necessary clause that has no equivalent in the proposed KEEP script.
+Split spans around errors and repetitions. Jump cuts inside a take are allowed. Never keep two versions of the same phrase in one span; spans should normally be no longer than 35 words.
+Keep transitions with their clauses and ensure the concatenated result is grammatical, complete, and chronological.
+Do not target a duration. Do not rewrite, paraphrase, reorder, or emit timestamps.`;
 
 async function completeJson(apiKey: string, system: string, user: string): Promise<unknown> {
   const controller = new AbortController();
@@ -221,11 +225,12 @@ export async function runCanonicalScriptPass(transcript: TranscriptSegment[] | W
     const keepSpans = parseCanonicalSpans(selection, "keepSpans");
     if (keepSpans.length === 0) throw new Error("canonical selection returned no source spans");
     const review = await completeJson(apiKey, CANONICAL_VERIFIER_PROMPT, buildCanonicalReviewScript(words, keepSpans));
+    const verifiedKeepSpans = parseCanonicalSpans(review, "keepSpans");
     return {
       plan: {
         version: CANONICAL_SCRIPT_PROMPT_VERSION,
-        keepSpans,
-        restoreSpans: parseCanonicalSpans(review, "restoreSpans"),
+        keepSpans: verifiedKeepSpans.length > 0 ? verifiedKeepSpans : keepSpans,
+        restoreSpans: [],
         summary:
           selection && typeof selection === "object" && typeof (selection as { summary?: unknown }).summary === "string"
             ? (selection as { summary: string }).summary

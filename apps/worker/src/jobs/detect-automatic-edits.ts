@@ -43,10 +43,41 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
   const stageDurations: Record<string, number> = {};
   async function timed<T>(name: string, work: () => Promise<T>): Promise<T> {
     const started = Date.now();
+    console.info(
+      JSON.stringify({
+        service: "worker",
+        event: "edit_detection.stage_started",
+        videoId: payload.videoId,
+        jobId: payload.jobId,
+        stage: name,
+      }),
+    );
     try {
       return await work();
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          service: "worker",
+          event: "edit_detection.stage_failed",
+          videoId: payload.videoId,
+          jobId: payload.jobId,
+          stage: name,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      throw error;
     } finally {
       stageDurations[name] = Date.now() - started;
+      console.info(
+        JSON.stringify({
+          service: "worker",
+          event: "edit_detection.stage_finished",
+          videoId: payload.videoId,
+          jobId: payload.jobId,
+          stage: name,
+          durationMs: stageDurations[name],
+        }),
+      );
     }
   }
   try {
@@ -100,6 +131,18 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
     if (!cached) {
       const ran = await timed("canonicalScript", () => runCanonicalScriptPass(timedRows));
       canonicalPlan = ran.plan;
+      console.info(
+        JSON.stringify({
+          service: "worker",
+          event: "edit_detection.canonical_plan",
+          videoId: payload.videoId,
+          jobId: payload.jobId,
+          status: ran.status,
+          model: ran.model,
+          keepSpanCount: canonicalPlan.keepSpans.length,
+          restoreSpanCount: canonicalPlan.restoreSpans.length,
+        }),
+      );
       if (ran.status !== "success") {
         scriptPassStatusWarning =
           ran.status === "disabled"
