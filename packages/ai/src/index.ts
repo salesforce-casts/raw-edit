@@ -2,9 +2,8 @@ import { loadConfig } from "@raw-edit/config";
 import {
   CANONICAL_SCRIPT_PROMPT_VERSION,
   SCRIPT_PASS_PROMPT_VERSION,
+  alignCanonicalScript,
   applyScriptPassGuards,
-  buildCanonicalReviewScript,
-  buildSourceLinkedTranscript,
   chunkWordRanges,
   decisionFromIndex,
   flattenWords,
@@ -12,7 +11,6 @@ import {
   maskScriptForPassB,
   needsAiArbitration,
   type CanonicalScriptPlan,
-  type CanonicalSourceSpan,
   type PaymentProvider,
   type ScriptPassDecision,
   type TakeCandidateGroup,
@@ -113,32 +111,28 @@ Prefer the take that continues coherently into the unrepeated material; delete t
 Keep deliberate callbacks. Return JSON {"decisions":[{"fromWord":0,"toWord":3,"category":"retake","reason":"...","confidence":0.9}]}
 Never emit timestamps. Indices are inclusive ordinals from the original script. Every decision needs a reason.`;
 
-const CANONICAL_SELECTION_PROMPT = `You are the lead editor of a talking-head recording.
-You receive the complete transcript in chronological order. Every line has a stable source word ID and the exact word spoken.
-First determine the concise, coherent final script. Then source that script by selecting only words that were actually spoken. Do not rewrite, paraphrase, invent, or reorder words.
+const CANONICAL_SELECTION_PROMPT = `You are the lead editor of one complete talking-head transcript.
+Treat the input as raw speech containing false starts, partial attempts, corrections, and full retakes. Produce the final script a viewer should hear.
 
-Return JSON exactly as {"keepSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"complete final delivery","confidence":0.95}],"summary":"..."}.
-Each keep span is inclusive and must reference one exact contiguous source passage. The concatenated keep spans are the final edited transcript.
-Return spans in chronological source order and include every unique introduction, explanation, instruction, numbered step, and conclusion that belongs in the presentation.
-When several attempts express the same idea, keep the most complete and fluent occurrence, normally the final corrected take.
-Remove repeated phrases, abandoned restarts, corrections, filler, and malformed partial statements even when they occur inside one long passage without punctuation.
-If an otherwise useful passage contains a repeated or wrong phrase, split it into multiple keep spans around that phrase. Jump cuts inside a spoken take are allowed and expected.
-Never return a keep span that contains two versions of the same phrase or an abandoned restart. Prefer short clause-level spans over one broad span; keep spans should normally be no longer than 35 words.
-Never stitch together incompatible sentence fragments. Read the concatenated selected words as one script and ensure it is grammatical and coherent.
-Keep transition words such as "first", "then", "because", and "for this" with the clause they introduce.
-Preserve unique facts, steps, requirements, pricing, and the call to action. Do not target a duration; length must follow the unique content.
-Do not select silence, production directions, explicit delete markers, or abandoned partial attempts when a complete replacement exists.`;
+Return JSON exactly as {"cleanedScript":"...","summary":"..."}.
+The cleanedScript must use only the exact words present in the source transcript, in their original chronological order. It must be an ordered subsequence of the source words. You may change punctuation and capitalization, but never rewrite, paraphrase, invent, or reorder spoken words.
+Read the whole transcript before editing. Keep one best, complete delivery of each idea and remove every worse attempt, repeated phrase, duplicated idea, stumble, filler, production direction, and malformed partial statement.
+Retakes may be inside a long sentence without punctuation or far apart in the recording. If a sentence begins incorrectly and restarts, keep only the complete corrected wording. If a phrase immediately repeats with one correction, keep only the corrected phrase.
+Preserve every unique introduction, explanation, requirement, numbered step, price, conclusion, and call to action that belongs in the presentation. Keep transitions such as "first", "then", "because", and "for this" with the clause they introduce.
+The cleanedScript must be grammatical, coherent from beginning to end, and contain no repeated information. Do not target a duration; its length must follow the unique content.`;
 
-const CANONICAL_VERIFIER_PROMPT = `You are the final editor and safety reviewer for a source-linked talking-head edit.
-Every line contains a source word ID, its proposed state (KEEP or CUT), and the exact spoken word.
-Audit the entire proposed edit, then return the complete corrected KEEP span list. Your output replaces the first editor's selection.
+const CANONICAL_VERIFIER_PROMPT = `You are the final editor of a cleaned talking-head script.
+You receive the complete raw transcript and another editor's proposed cleaned script. Audit the proposed script against the entire source, then return the corrected final script.
 
-Return JSON exactly as {"keepSpans":[{"fromWordId":"w_000000","toWordId":"w_000010","reason":"verified final delivery","confidence":0.95}]}.
-Read all KEEP words concatenated as the proposed final script. Remove any repeated phrase, duplicate idea, abandoned restart, filler, malformed partial statement, or word fragment that remains.
-Restore a CUT passage only when it contains a unique fact, step, requirement, conclusion, or necessary clause that has no equivalent in the proposed KEEP script.
-Split spans around errors and repetitions. Jump cuts inside a take are allowed. Never keep two versions of the same phrase in one span; spans should normally be no longer than 35 words.
-Keep transitions with their clauses and ensure the concatenated result is grammatical, complete, and chronological.
-Do not target a duration. Do not rewrite, paraphrase, reorder, or emit timestamps.`;
+Return JSON exactly as {"cleanedScript":"..."}.
+Use only exact words present in the raw transcript and preserve their chronological source order. The result must be an ordered subsequence of source words. You may change punctuation and capitalization only; do not rewrite, paraphrase, invent, or reorder words.
+Remove every remaining repeated phrase, duplicate idea, abandoned restart, filler, malformed fragment, and worse take. A point must appear only once, using its most complete and fluent delivery.
+Restore source material only when it supplies a unique fact, complete instruction, necessary transition, conclusion, or call to action missing from the proposal.
+Read the returned cleanedScript aloud as one continuous story. It must be concise, grammatical, coherent, and complete. Do not target a duration.`;
+
+const CANONICAL_ALIGNMENT_REPAIR_PROMPT = `You repair a cleaned script that could not be mapped exactly to its raw transcript.
+Return JSON exactly as {"cleanedScript":"..."}.
+Preserve the proposed meaning and structure, but replace any invented, paraphrased, or reordered wording with exact words copied from the raw transcript in chronological order. The output must be an exact ordered subsequence of the raw transcript. Do not reintroduce retakes, repeated ideas, false starts, or fillers.`;
 
 async function completeJson(apiKey: string, system: string, user: string): Promise<unknown> {
   const controller = new AbortController();
@@ -175,20 +169,10 @@ function parseDecisionList(payload: unknown): Partial<ScriptPassDecision>[] {
   return Array.isArray(decisions) ? (decisions as Partial<ScriptPassDecision>[]) : [];
 }
 
-function parseCanonicalSpans(payload: unknown, key: "keepSpans" | "restoreSpans"): CanonicalSourceSpan[] {
-  if (!payload || typeof payload !== "object") return [];
-  const spans = (payload as Record<string, unknown>)[key];
-  if (!Array.isArray(spans)) return [];
-  return spans.filter((span): span is CanonicalSourceSpan => {
-    if (!span || typeof span !== "object") return false;
-    const candidate = span as Partial<CanonicalSourceSpan>;
-    return (
-      typeof candidate.fromWordId === "string" &&
-      typeof candidate.toWordId === "string" &&
-      typeof candidate.reason === "string" &&
-      typeof candidate.confidence === "number"
-    );
-  });
+function parseCleanedScript(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const cleanedScript = (payload as { cleanedScript?: unknown }).cleanedScript;
+  return typeof cleanedScript === "string" ? cleanedScript.trim() : "";
 }
 
 export type CanonicalScriptRun = {
@@ -221,16 +205,37 @@ export async function runCanonicalScriptPass(transcript: TranscriptSegment[] | W
     };
   }
   try {
-    const selection = await completeJson(apiKey, CANONICAL_SELECTION_PROMPT, buildSourceLinkedTranscript(words));
-    const keepSpans = parseCanonicalSpans(selection, "keepSpans");
-    if (keepSpans.length === 0) throw new Error("canonical selection returned no source spans");
-    const review = await completeJson(apiKey, CANONICAL_VERIFIER_PROMPT, buildCanonicalReviewScript(words, keepSpans));
-    const verifiedKeepSpans = parseCanonicalSpans(review, "keepSpans");
+    const rawTranscript = words.map((word) => word.text).join(" ").trim();
+    const selection = await completeJson(apiKey, CANONICAL_SELECTION_PROMPT, rawTranscript);
+    const selectedScript = parseCleanedScript(selection);
+    if (!selectedScript) throw new Error("canonical selection returned no cleaned script");
+    const review = await completeJson(
+      apiKey,
+      CANONICAL_VERIFIER_PROMPT,
+      JSON.stringify({ rawTranscript, proposedCleanedScript: selectedScript }),
+    );
+    let cleanedScript = parseCleanedScript(review) || selectedScript;
+    let alignment = alignCanonicalScript(cleanedScript, words);
+    if (alignment.error) {
+      const repair = await completeJson(
+        apiKey,
+        CANONICAL_ALIGNMENT_REPAIR_PROMPT,
+        JSON.stringify({ rawTranscript, proposedCleanedScript: cleanedScript, alignmentError: alignment.error }),
+      );
+      cleanedScript = parseCleanedScript(repair);
+      if (!cleanedScript) throw new Error("canonical alignment repair returned no cleaned script");
+      alignment = alignCanonicalScript(cleanedScript, words);
+    }
+    if (alignment.error || alignment.coverage !== 1 || alignment.spans.length === 0) {
+      throw new Error(alignment.error ?? "cleaned script could not be aligned exactly to the source transcript");
+    }
     return {
       plan: {
         version: CANONICAL_SCRIPT_PROMPT_VERSION,
-        keepSpans: verifiedKeepSpans.length > 0 ? verifiedKeepSpans : keepSpans,
+        keepSpans: alignment.spans,
         restoreSpans: [],
+        cleanedScript,
+        alignmentCoverage: alignment.coverage,
         summary:
           selection && typeof selection === "object" && typeof (selection as { summary?: unknown }).summary === "string"
             ? (selection as { summary: string }).summary

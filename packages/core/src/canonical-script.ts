@@ -26,9 +26,162 @@ export type CompiledCanonicalScript = {
   warning?: string;
 };
 
+export type CanonicalScriptAlignment = {
+  spans: CanonicalSourceSpan[];
+  sourceWordIndexes: number[];
+  canonicalWordCount: number;
+  coverage: number;
+  error?: string;
+};
+
 const WORD_ID = /^w_(\d+)$/;
 const UNIT_GAP_MS = 900;
 const UNIT_MAX_WORDS = 60;
+
+function normalizedToken(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function canonicalTokens(value: string): string[] {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map(normalizedToken)
+    .filter(Boolean);
+}
+
+type AlignmentState = {
+  sourceTokenIndex: number;
+  jumps: number;
+  skipped: number;
+  firstSourceTokenIndex: number;
+  previousStateIndex: number;
+};
+
+function betterAlignment(left: AlignmentState, right: AlignmentState): boolean {
+  if (left.jumps !== right.jumps) return left.jumps < right.jumps;
+  if (left.skipped !== right.skipped) return left.skipped < right.skipped;
+  const leftSpan = left.sourceTokenIndex - left.firstSourceTokenIndex;
+  const rightSpan = right.sourceTokenIndex - right.firstSourceTokenIndex;
+  if (leftSpan !== rightSpan) return leftSpan < rightSpan;
+  // When two source passages are otherwise identical, prefer the later delivery.
+  return left.sourceTokenIndex > right.sourceTokenIndex;
+}
+
+/**
+ * Maps a verbatim cleaned script back to the source transcript. The cleaned
+ * script must be an ordered subsequence of source words. Dynamic programming
+ * minimizes jump cuts first and skipped source words second, so repeated text
+ * resolves to the most coherent contiguous delivery without asking the model
+ * to reason about timestamps or word IDs.
+ */
+export function alignCanonicalScript(cleanedScript: string, words: Word[]): CanonicalScriptAlignment {
+  const targetTokens = canonicalTokens(cleanedScript);
+  const sourceTokens = words
+    .map((word, wordIndex) => ({ token: normalizedToken(word.text), wordIndex }))
+    .filter((item) => item.token.length > 0);
+  if (targetTokens.length === 0) {
+    return {
+      spans: [],
+      sourceWordIndexes: [],
+      canonicalWordCount: 0,
+      coverage: 0,
+      error: "cleaned script was empty",
+    };
+  }
+
+  let layers: AlignmentState[][] = [];
+  for (let targetIndex = 0; targetIndex < targetTokens.length; targetIndex += 1) {
+    const candidates: AlignmentState[] = [];
+    for (let sourceTokenIndex = 0; sourceTokenIndex < sourceTokens.length; sourceTokenIndex += 1) {
+      if (sourceTokens[sourceTokenIndex].token !== targetTokens[targetIndex]) continue;
+      if (targetIndex === 0) {
+        candidates.push({
+          sourceTokenIndex,
+          jumps: 0,
+          skipped: 0,
+          firstSourceTokenIndex: sourceTokenIndex,
+          previousStateIndex: -1,
+        });
+        continue;
+      }
+      let best: AlignmentState | null = null;
+      let bestPreviousIndex = -1;
+      const previousLayer = layers[targetIndex - 1];
+      for (let previousIndex = 0; previousIndex < previousLayer.length; previousIndex += 1) {
+        const previous = previousLayer[previousIndex];
+        if (previous.sourceTokenIndex >= sourceTokenIndex) continue;
+        const gap = sourceTokenIndex - previous.sourceTokenIndex - 1;
+        const next: AlignmentState = {
+          sourceTokenIndex,
+          jumps: previous.jumps + (gap > 0 ? 1 : 0),
+          skipped: previous.skipped + gap,
+          firstSourceTokenIndex: previous.firstSourceTokenIndex,
+          previousStateIndex: previousIndex,
+        };
+        if (!best || betterAlignment(next, best)) {
+          best = next;
+          bestPreviousIndex = previousIndex;
+        }
+      }
+      if (best) candidates.push({ ...best, previousStateIndex: bestPreviousIndex });
+    }
+    if (candidates.length === 0) {
+      return {
+        spans: [],
+        sourceWordIndexes: [],
+        canonicalWordCount: targetTokens.length,
+        coverage: targetIndex / targetTokens.length,
+        error: `cleaned script stopped matching at word ${targetIndex + 1} of ${targetTokens.length}`,
+      };
+    }
+    layers.push(candidates);
+  }
+
+  const finalLayer = layers.at(-1)!;
+  let finalStateIndex = 0;
+  for (let index = 1; index < finalLayer.length; index += 1) {
+    if (betterAlignment(finalLayer[index], finalLayer[finalStateIndex])) finalStateIndex = index;
+  }
+  const matchedSourceTokenIndexes = Array<number>(targetTokens.length);
+  for (let targetIndex = targetTokens.length - 1; targetIndex >= 0; targetIndex -= 1) {
+    const state = layers[targetIndex][finalStateIndex];
+    matchedSourceTokenIndexes[targetIndex] = state.sourceTokenIndex;
+    finalStateIndex = state.previousStateIndex;
+  }
+  const sourceWordIndexes = matchedSourceTokenIndexes.map((index) => sourceTokens[index].wordIndex);
+  const spans: CanonicalSourceSpan[] = [];
+  let spanStart = sourceWordIndexes[0];
+  let spanEnd = sourceWordIndexes[0];
+  const flush = () => {
+    spans.push({
+      fromWordId: sourceWordId(spanStart),
+      toWordId: sourceWordId(spanEnd),
+      reason: "Verbatim match to the verified cleaned script",
+      confidence: 1,
+    });
+  };
+  for (let index = 1; index < sourceWordIndexes.length; index += 1) {
+    const current = sourceWordIndexes[index];
+    if (current <= spanEnd + 1) {
+      spanEnd = Math.max(spanEnd, current);
+    } else {
+      flush();
+      spanStart = current;
+      spanEnd = current;
+    }
+  }
+  flush();
+  return {
+    spans,
+    sourceWordIndexes,
+    canonicalWordCount: targetTokens.length,
+    coverage: 1,
+  };
+}
 
 export function sourceWordId(index: number): string {
   return `w_${String(index).padStart(6, "0")}`;

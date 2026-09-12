@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CANONICAL_SCRIPT_PROMPT_VERSION,
+  alignCanonicalScript,
   buildNarrativeUnits,
   compileCanonicalScript,
   sourceWordId,
@@ -30,6 +31,45 @@ function plan(fromWord: number, toWord: number): CanonicalScriptPlan {
 }
 
 describe("source-linked canonical script", () => {
+  it("aligns a cleaned script to exact source words and skips internal retakes", () => {
+    const words = timedWords(
+      "Instead of creating regular chocolates and competing with other markets " +
+      "instead of creating regular chocolates and competing with other markets " +
+      "instead of creating homemade chocolates and competing with other markets you need to create 3D chocolates.",
+    );
+    const cleaned =
+      "Instead of creating homemade chocolates and competing with other markets you need to create 3D chocolates.";
+    const aligned = alignCanonicalScript(cleaned, words);
+
+    expect(aligned.error).toBeUndefined();
+    expect(aligned.coverage).toBe(1);
+    expect(aligned.sourceWordIndexes).toEqual(words.map((_, index) => index).slice(20));
+    expect(aligned.spans).toHaveLength(1);
+  });
+
+  it("aligns the corrected upload instruction rather than its abandoned opening", () => {
+    const words = timedWords(
+      "Then you need to upload the 3D. Then you need to upload the 3D design. Finally the machine deposits chocolate.",
+    );
+    const aligned = alignCanonicalScript(
+      "Then you need to upload the 3D design. Finally the machine deposits chocolate.",
+      words,
+    );
+
+    expect(aligned.error).toBeUndefined();
+    expect(aligned.sourceWordIndexes).toEqual(words.map((_, index) => index).slice(7));
+    expect(aligned.spans).toHaveLength(1);
+  });
+
+  it("fails closed when cleaned text invents a word that was not spoken", () => {
+    const words = timedWords("First you need to melt the chocolate.");
+    const aligned = alignCanonicalScript("First you must melt the chocolate.", words);
+
+    expect(aligned.coverage).toBeLessThan(1);
+    expect(aligned.spans).toEqual([]);
+    expect(aligned.error).toContain("stopped matching");
+  });
+
   it("keeps the selected complete take and removes earlier near-duplicates", () => {
     const words = timedWords(
       "To start this business you need chocolate base. " +

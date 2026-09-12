@@ -141,6 +141,8 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
           model: ran.model,
           keepSpanCount: canonicalPlan.keepSpans.length,
           restoreSpanCount: canonicalPlan.restoreSpans.length,
+          cleanedWordCount: canonicalPlan.cleanedScript?.trim().split(/\s+/).filter(Boolean).length ?? 0,
+          alignmentCoverage: canonicalPlan.alignmentCoverage,
         }),
       );
       if (ran.status !== "success") {
@@ -249,6 +251,20 @@ export async function processDetectAutomaticEdits(payload: QueueJobPayload) {
       progress: 100,
       scriptPassWarning: scriptPassWarning ?? null,
     });
+    console.info(
+      JSON.stringify({
+        service: "worker",
+        event: "edit_detection.completed",
+        videoId: payload.videoId,
+        jobId: payload.jobId,
+        promptVersion: CANONICAL_SCRIPT_PROMPT_VERSION,
+        editVersion: nextNumber,
+        keepSpanCount: canonicalPlan.keepSpans.length,
+        keptDurationMs: covering
+          .filter((segment) => segment.action === "KEEP")
+          .reduce((total, segment) => total + segment.endMs - segment.startMs, 0),
+      }),
+    );
     await finishJob(payload.jobId, "SUCCEEDED", { stageDurations });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Detection failed";

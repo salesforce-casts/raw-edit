@@ -191,7 +191,7 @@ export const SCRIPT_PASS_BATCH_REMOVAL_BUDGET = 0.6;
 export const SCRIPT_PASS_SINGLE_REMOVAL_BUDGET = 0.3;
 export const SCRIPT_PASS_CONFIDENCE_FLOOR = 0.75;
 export const SCRIPT_PASS_PROMPT_VERSION = "script-pass.v3";
-export const CANONICAL_SCRIPT_PROMPT_VERSION = "canonical-script.v2";
+export const CANONICAL_SCRIPT_PROMPT_VERSION = "canonical-script.v3";
 export const DEFAULT_PACING_PRESET: PacingPreset = "natural";
 export const SILENCE_THRESHOLD_OPTIONS_MS = [500, 1000, 1500, 2000, 3000] as const;
 export const SHARE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXY";
@@ -263,6 +263,8 @@ export type CanonicalScriptPlan = {
   version: typeof CANONICAL_SCRIPT_PROMPT_VERSION;
   keepSpans: CanonicalSourceSpan[];
   restoreSpans: CanonicalSourceSpan[];
+  cleanedScript?: string;
+  alignmentCoverage?: number;
   summary?: string;
 };
 

@@ -5,6 +5,7 @@ import { requireOwnedVideo } from "@/server/owned-video";
 import { enqueueJob } from "@/server/jobs";
 import { getWebContainer } from "@/lib/container";
 import { getDb, transcripts, videos } from "@raw-edit/db";
+import { CANONICAL_SCRIPT_PROMPT_VERSION } from "@raw-edit/core";
 import { eq } from "drizzle-orm";
 
 export async function POST(_: Request, context: { params: Promise<{ videoId: string }> }) {
@@ -40,7 +41,7 @@ export async function POST(_: Request, context: { params: Promise<{ videoId: str
         videoId: video.id,
         userId: user.id,
         type: needsTranscription ? "TRANSCRIBE_VIDEO" : "DETECT_AUTOMATIC_EDITS",
-        inputVersion: `${video.sourceSha256 ?? video.id}|${video.silenceThresholdMs}|retry-${Date.now()}`,
+        inputVersion: `${video.sourceSha256 ?? video.id}|${video.silenceThresholdMs}|${CANONICAL_SCRIPT_PROMPT_VERSION}|retry-${Date.now()}`,
       });
     } catch (error) {
       await db
@@ -61,6 +62,7 @@ export async function POST(_: Request, context: { params: Promise<{ videoId: str
       status,
       progress,
       progressMessage,
+      analysisVersion: CANONICAL_SCRIPT_PROMPT_VERSION,
     });
     return NextResponse.json({
       ok: true,
